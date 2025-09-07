@@ -1,0 +1,15 @@
+[package]
+name = "rivalcfg-tray"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glib = "0.18"
+gio = "0.18"
+anyhow = "1.0"
+appindicator3 = "0.3"
+gdk-pixbuf = "0.18"
+gtk = "0.18"
+
+# System dependency required for SVG to PNG conversion at runtime:
+#   rsvg-convert (usually provided by the librsvg2-bin package)

@@ -1,0 +1,31 @@
+# Rust specific files
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+.env
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Debug files
+*.dSYM/
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Generated documentation
+/doc/
+/target/doc/
+
+# Test coverage
+*.profraw
+/coverage/

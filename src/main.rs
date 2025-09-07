@@ -1,0 +1,316 @@
+use std::env;
+fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
+    use std::ffi::OsStr;
+    use std::process::Command;
+
+    let mut tmp_path = env::temp_dir();
+    let file_stem = svg_path.file_stem().and_then(OsStr::to_str).unwrap_or("icon");
+    tmp_path.push(format!("{}_tray.png", file_stem));
+
+    let status = Command::new("rsvg-convert")
+        .arg("-w").arg("64")
+        .arg("-h").arg("64")
+        .arg("-o").arg(&tmp_path)
+        .arg(svg_path)
+        .status()
+        .ok()?;
+    if status.success() {
+        Some(tmp_path.to_str()?.to_string())
+    } else {
+        None
+    }
+}
+use gtk::prelude::*;
+use appindicator3::prelude::*;
+use appindicator3::{Indicator, IndicatorCategory, IndicatorStatus};
+use std::process::Command;
+use std::time::Duration;
+use glib::ControlFlow;
+use std::path::PathBuf;
+
+fn get_battery_level() -> Option<u8> {
+    let output = Command::new("rivalcfg")
+        .arg("--battery-level")
+        .output()
+        .ok()?;
+    // println!("output: {}", String::from_utf8_lossy(&output.stdout));
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // println!("stdout: {}", stdout);
+    let second_last_word = stdout.split_whitespace().rev().nth(1)?;
+    // println!("Second last word: {}", second_last_word);
+
+    let trimmed = second_last_word.trim_end_matches('%');
+    // println!("Trimmed: {}", trimmed);
+
+    let percent = trimmed.parse::<u8>().ok()?;
+    // println!("Battery level: {}", percent);
+    Some(percent)
+}
+
+fn battery_icon_path(level: u8) -> PathBuf {
+    let base = "icons";
+    if level > 90 {
+        PathBuf::from(format!("{}/battery-100.svg", base))
+    } else if level > 74 {
+        PathBuf::from(format!("{}/battery-75.svg", base))
+    } else if level > 49 {
+        PathBuf::from(format!("{}/battery-50.svg", base))
+    } else if level > 24 {
+        PathBuf::from(format!("{}/battery-25.svg", base))
+    } else {
+        PathBuf::from(format!("{}/battery-0.svg", base))
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    gtk::init()?;
+
+    // Create AppIndicator
+    let level = get_battery_level().unwrap_or(0);
+    let icon_path = battery_icon_path(level);
+    let png_path = svg_to_png_temp(&icon_path).expect("Failed to convert SVG to PNG");
+    let menu = gtk::Menu::new();
+    let percent_item = gtk::MenuItem::with_label(&format!("Battery: {}%", level));
+    percent_item.set_sensitive(false);
+    menu.append(&percent_item);
+
+    let config_item = gtk::MenuItem::with_label("Config");
+    menu.append(&config_item);
+
+    let quit_item = gtk::MenuItem::with_label("Quit");
+    menu.append(&quit_item);
+    quit_item.connect_activate(|_| {
+        gtk::main_quit();
+    });
+    menu.show_all();
+
+    // Config window logic
+    config_item.connect_activate(|_| {
+        use gtk::prelude::*;
+        use gtk::{Window, WindowType, Label, Entry, ComboBoxText, Button, Box as GtkBox, Orientation, MessageDialog, DialogFlags, MessageType, ButtonsType};
+        use std::rc::Rc;
+
+        let win = Rc::new(Window::new(WindowType::Toplevel));
+        win.set_title("Rivalcfg GUI");
+        win.set_default_size(400, 300);
+
+        let vbox = GtkBox::new(Orientation::Vertical, 8);
+        vbox.set_margin_top(10);
+        vbox.set_margin_bottom(10);
+        vbox.set_margin_start(10);
+        vbox.set_margin_end(10);
+
+        let title = Label::new(Some("SteelSeries Mouse Configuration"));
+        title.set_markup("<span size='large'><b>SteelSeries Mouse Configuration</b></span>");
+        vbox.pack_start(&title, false, false, 0);
+
+        // Battery level
+        let battery_label = Label::new(Some("Battery Level: N/A"));
+        vbox.pack_start(&battery_label, false, false, 0);
+
+        // Sensitivity (DPI)
+        let sens_box = GtkBox::new(Orientation::Horizontal, 4);
+        sens_box.pack_start(&Label::new(Some("Sensitivity (DPI):")), false, false, 0);
+        let sensitivity_entry = Entry::new();
+        sens_box.pack_start(&sensitivity_entry, true, true, 0);
+        vbox.pack_start(&sens_box, false, false, 0);
+
+        // Polling rate
+        let poll_box = GtkBox::new(Orientation::Horizontal, 4);
+        poll_box.pack_start(&Label::new(Some("Polling Rate (Hz):")), false, false, 0);
+        let polling_rate_combo = ComboBoxText::new();
+        for rate in &["125", "250", "500", "1000"] {
+            polling_rate_combo.append_text(rate);
+        }
+        polling_rate_combo.set_active(Some(3));
+        poll_box.pack_start(&polling_rate_combo, true, true, 0);
+        vbox.pack_start(&poll_box, false, false, 0);
+
+        // Sleep timer
+        let sleep_box = GtkBox::new(Orientation::Horizontal, 4);
+        sleep_box.pack_start(&Label::new(Some("Sleep Timer (minutes):")), false, false, 0);
+        let sleep_timer_entry = Entry::new();
+        sleep_box.pack_start(&sleep_timer_entry, true, true, 0);
+        vbox.pack_start(&sleep_box, false, false, 0);
+
+        // Dim timer
+        let dim_box = GtkBox::new(Orientation::Horizontal, 4);
+        dim_box.pack_start(&Label::new(Some("Dim Timer (seconds):")), false, false, 0);
+        let dim_timer_entry = Entry::new();
+        dim_box.pack_start(&dim_timer_entry, true, true, 0);
+        vbox.pack_start(&dim_box, false, false, 0);
+
+        // Buttons
+        let btn_box = GtkBox::new(Orientation::Horizontal, 8);
+        let apply_btn = Button::with_label("Apply Settings");
+        let reset_btn = Button::with_label("Reset Settings");
+        btn_box.pack_start(&apply_btn, true, true, 0);
+        btn_box.pack_start(&reset_btn, true, true, 0);
+        vbox.pack_start(&btn_box, false, false, 0);
+
+        let show_btn = Button::with_label("Show Connected Devices");
+        vbox.pack_start(&show_btn, false, false, 0);
+
+        win.add(&vbox);
+        win.show_all();
+
+        // Helper to update battery label
+        let battery_label_rc = Rc::new(battery_label);
+        let win_apply = win.clone();
+        let win_reset = win.clone();
+        let win_show = win.clone();
+        let update_battery = {
+            let battery_label = battery_label_rc.clone();
+            move || {
+                let output = std::process::Command::new("rivalcfg")
+                    .arg("--battery-level")
+                    .output();
+                let text = if let Ok(out) = output {
+                    if out.status.success() {
+                        format!("Battery Level: {}", String::from_utf8_lossy(&out.stdout).trim())
+                    } else {
+                        "Battery Level: N/A".to_string()
+                    }
+                } else {
+                    "Battery Level: N/A".to_string()
+                };
+                battery_label.set_text(&text);
+            }
+        };
+        update_battery();
+
+        // Apply button logic
+        let battery_label_apply = battery_label_rc.clone();
+        apply_btn.connect_clicked(move |_| {
+            let mut command = vec!["rivalcfg".to_string()];
+            let sensitivity = sensitivity_entry.text().to_string();
+            if !sensitivity.is_empty() {
+                command.push("--sensitivity".to_string());
+                command.push(sensitivity);
+            }
+            let polling_rate = polling_rate_combo.active_text().map(|s| s.to_string());
+            if let Some(rate) = polling_rate {
+                command.push("--polling-rate".to_string());
+                command.push(rate);
+            }
+            let sleep_timer = sleep_timer_entry.text().to_string();
+            if !sleep_timer.is_empty() {
+                command.push("--sleep-timer".to_string());
+                command.push(sleep_timer);
+            }
+            let dim_timer = dim_timer_entry.text().to_string();
+            if !dim_timer.is_empty() {
+                command.push("--dim-timer".to_string());
+                command.push(dim_timer);
+            }
+            // Update battery
+            let output = std::process::Command::new("rivalcfg")
+                .arg("--battery-level")
+                .output();
+            let text = if let Ok(out) = output {
+                if out.status.success() {
+                    format!("Battery Level: {}", String::from_utf8_lossy(&out.stdout).trim())
+                } else {
+                    "Battery Level: N/A".to_string()
+                }
+            } else {
+                "Battery Level: N/A".to_string()
+            };
+            battery_label_apply.set_text(&text);
+            // Apply settings
+            if command.len() > 1 {
+                let result = std::process::Command::new(&command[0])
+                    .args(&command[1..])
+                    .output();
+                if let Err(e) = result {
+                    let dialog = MessageDialog::new(Some(&*win_apply), DialogFlags::MODAL, MessageType::Error, ButtonsType::Ok, &format!("Error running the command: {}", e));
+                    dialog.run();
+                    unsafe { dialog.destroy(); }
+                }
+            }
+        });
+
+        // Reset button logic
+        reset_btn.connect_clicked(move |_| {
+            let result = std::process::Command::new("rivalcfg")
+                .arg("-r")
+                .output();
+            if let Ok(out) = result {
+                let msg = String::from_utf8_lossy(&out.stdout).to_string();
+                let dialog = MessageDialog::new(Some(&*win_reset), DialogFlags::MODAL, MessageType::Info, ButtonsType::Ok, &msg);
+                dialog.run();
+                unsafe { dialog.destroy(); }
+            } else {
+                let dialog = MessageDialog::new(Some(&*win_reset), DialogFlags::MODAL, MessageType::Error, ButtonsType::Ok, "Error resetting settings");
+                dialog.run();
+                unsafe { dialog.destroy(); }
+            }
+        });
+
+        // Show devices button logic
+        show_btn.connect_clicked(move |_| {
+            let result = std::process::Command::new("rivalcfg")
+                .arg("--list-devices")
+                .output();
+            let msg = if let Ok(out) = result {
+                let output = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if output.is_empty() {
+                    "No compatible devices found.".to_string()
+                } else {
+                    output
+                }
+            } else {
+                "Error running rivalcfg CLI.".to_string()
+            };
+            let dialog = MessageDialog::new(Some(&*win_show), DialogFlags::MODAL, MessageType::Info, ButtonsType::Ok, &msg);
+            dialog.run();
+            unsafe { dialog.destroy(); }
+        });
+    });
+
+    let indicator = Indicator::builder("rivalcfg-tray")
+        .category(IndicatorCategory::ApplicationStatus)
+        .menu(&menu)
+        .icon(&png_path, "Battery")
+        .status(IndicatorStatus::Active)
+        .title(&format!("Battery: {}%", level))
+        .build();
+
+    // Update icon every 30 seconds
+    let percent_item_clone = percent_item.clone();
+    glib::timeout_add_local(Duration::from_secs(30), move || {
+        let level = get_battery_level().unwrap_or(0);
+        let icon_path = battery_icon_path(level);
+        // Retry up to 5 times with 200ms delay if conversion fails
+        let mut tries = 0;
+        let png_path = loop {
+            match svg_to_png_temp(&icon_path) {
+                Some(p) => break Some(p),
+                None if tries < 5 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                },
+                None => break None,
+            }
+        };
+        if let Some(png_path) = png_path {
+            eprintln!("[rivalcfg-tray] Setting icon: {}", png_path);
+            use std::io::Write;
+            std::io::stderr().flush().ok();
+            indicator.set_icon(&png_path);
+        } else {
+            eprintln!("[rivalcfg-tray] Warning: Failed to convert SVG to PNG for icon: {} after retries", icon_path.display());
+            use std::io::Write;
+            std::io::stderr().flush().ok();
+        }
+        indicator.set_title(Some(&format!("Battery: {}%", level)));
+        percent_item_clone.set_label(&format!("Battery: {}%", level));
+        ControlFlow::Continue
+    });
+
+    gtk::main();
+    Ok(())
+}
