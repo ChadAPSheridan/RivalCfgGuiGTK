@@ -1,0 +1,33 @@
+app-id: com.example.rivalcfgtray
+runtime: org.gnome.Platform
+runtime-version: '48'
+sdk: org.gnome.Sdk
+command: rivalcfg-tray
+modules:
+  # Rust app
+  - name: rivalcfg-tray
+    buildsystem: cargo
+    sources:
+      - type: git
+        url: https://github.com/ChadAPSheridan/RivalCfgGuiGTK.git
+    build-args:
+      - --release
+
+  # Python rivalcfg CLI
+  - name: rivalcfg
+    buildsystem: simple
+    build-commands:
+      - pip3 install --prefix=/app rivalcfg
+    sources:
+      - type: git
+        url: https://github.com/rivalcfg/rivalcfg.git
+
+  # Icons and desktop file
+  - name: resources
+    buildsystem: simple
+    build-commands:
+      - install -D rivalcfg-tray.desktop /app/share/applications/com.example.rivalcfgtray.desktop
+      - install -D icons/app_icon.png /app/share/icons/hicolor/128x128/apps/com.example.rivalcfgtray.png
+    sources:
+      - type: dir
+        path: .
