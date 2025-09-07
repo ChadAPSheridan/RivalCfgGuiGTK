@@ -1,0 +1,9 @@
+[Unit]
+Description=RivalCfg Tray App
+
+[Service]
+ExecStart=/usr/local/bin/rivalcfg-gui
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
