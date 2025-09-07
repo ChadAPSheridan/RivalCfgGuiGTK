@@ -1,16 +1,33 @@
 use std::env;
+// use std::io::Stdout;
 fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     use std::ffi::OsStr;
     use std::process::Command;
+    use std::fs;
+    use std::time::SystemTime;
 
     let mut tmp_path = env::temp_dir();
-    let file_stem = svg_path.file_stem().and_then(OsStr::to_str).unwrap_or("icon");
-    tmp_path.push(format!("{}_tray.png", file_stem));
+    let file_stem = svg_path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("icon");
+    // Add a timestamp to avoid pesky caching issues
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    tmp_path.push(format!("{}_{}_tray.png", file_stem, timestamp));
+
+    // Remove any existing PNG before generating a new one
+    let _ = fs::remove_file(&tmp_path);
 
     let status = Command::new("rsvg-convert")
-        .arg("-w").arg("64")
-        .arg("-h").arg("64")
-        .arg("-o").arg(&tmp_path)
+        .arg("-w")
+        .arg("64")
+        .arg("-h")
+        .arg("64")
+        .arg("-o")
+        .arg(&tmp_path)
         .arg(svg_path)
         .status()
         .ok()?;
@@ -20,34 +37,40 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
         None
     }
 }
-use gtk::prelude::*;
 use appindicator3::prelude::*;
 use appindicator3::{Indicator, IndicatorCategory, IndicatorStatus};
+use glib::ControlFlow;
+use gtk::prelude::*;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
-use glib::ControlFlow;
-use std::path::PathBuf;
 
-fn get_battery_level() -> Option<u8> {
+fn get_battery_level() -> Option<(u8, bool)> {
     let output = Command::new("rivalcfg")
         .arg("--battery-level")
         .output()
         .ok()?;
-    // println!("output: {}", String::from_utf8_lossy(&output.stdout));
+
     if !output.status.success() {
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // println!("stdout: {}", stdout);
+    let charging_status = get_battery_status(&stdout)?;
     let second_last_word = stdout.split_whitespace().rev().nth(1)?;
-    // println!("Second last word: {}", second_last_word);
-
     let trimmed = second_last_word.trim_end_matches('%');
-    // println!("Trimmed: {}", trimmed);
-
     let percent = trimmed.parse::<u8>().ok()?;
-    // println!("Battery level: {}", percent);
-    Some(percent)
+
+    Some((percent, charging_status))
+}
+
+fn get_battery_status(stdout: &str) -> Option<bool> {
+    if stdout.contains("Charging") {
+        Some(true)
+    } else if stdout.contains("Discharging") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 fn battery_icon_path(level: u8) -> PathBuf {
@@ -60,17 +83,61 @@ fn battery_icon_path(level: u8) -> PathBuf {
         PathBuf::from(format!("{}/battery-50.svg", base))
     } else if level > 24 {
         PathBuf::from(format!("{}/battery-25.svg", base))
+    } else if level > 9 {
+        PathBuf::from(format!("{}/battery-warn.svg", base))
     } else {
         PathBuf::from(format!("{}/battery-0.svg", base))
     }
+}
+
+fn composite_battery_charging_svg(
+    battery_svg: &PathBuf,
+    charging_svg: &PathBuf,
+) -> Option<PathBuf> {
+    use std::fs;
+    use std::io::Write;
+
+    let battery_content = fs::read_to_string(battery_svg).ok()?;
+    let mut charging_src = fs::read_to_string(charging_svg).ok()?;
+    // Strip everything before the path element
+    if let Some(pos) = charging_src.find("<path") {
+        charging_src = charging_src[pos..].to_string();
+    }
+    // Strip everything after the path element
+    if let Some(pos) = charging_src.rfind("</svg>") {
+        charging_src = charging_src[..pos].to_string();
+    }
+
+    let charging_content = charging_src;
+
+    // Simple SVG overlay by inserting charging SVG into battery SVG
+    let composite_svg = battery_content.replace("</svg>", &format!("{}\n</svg>", charging_content));
+
+    let mut tmp_path = env::temp_dir();
+    let file_stem = battery_svg
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("icon");
+    tmp_path.push(format!("{}_charging.svg", file_stem));
+
+    let mut file = fs::File::create(&tmp_path).ok()?;
+    file.write_all(composite_svg.as_bytes()).ok()?;
+
+    Some(tmp_path)
 }
 
 fn main() -> anyhow::Result<()> {
     gtk::init()?;
 
     // Create AppIndicator
-    let level = get_battery_level().unwrap_or(0);
-    let icon_path = battery_icon_path(level);
+    let (level, charging) = get_battery_level().unwrap_or((0, false));
+    let icon_path = if charging {
+        let charging_svg = PathBuf::from("icons/charging.svg");
+        composite_battery_charging_svg(&battery_icon_path(level), &charging_svg)
+            .unwrap_or(battery_icon_path(level))
+    } else {
+        battery_icon_path(level)
+    };
     let png_path = svg_to_png_temp(&icon_path).expect("Failed to convert SVG to PNG");
     let menu = gtk::Menu::new();
     let percent_item = gtk::MenuItem::with_label(&format!("Battery: {}%", level));
@@ -90,7 +157,10 @@ fn main() -> anyhow::Result<()> {
     // Config window logic
     config_item.connect_activate(|_| {
         use gtk::prelude::*;
-        use gtk::{Window, WindowType, Label, Entry, ComboBoxText, Button, Box as GtkBox, Orientation, MessageDialog, DialogFlags, MessageType, ButtonsType};
+        use gtk::{
+            Box as GtkBox, Button, ButtonsType, ComboBoxText, DialogFlags, Entry, Label,
+            MessageDialog, MessageType, Orientation, Window, WindowType,
+        };
         use std::rc::Rc;
 
         let win = Rc::new(Window::new(WindowType::Toplevel));
@@ -170,7 +240,10 @@ fn main() -> anyhow::Result<()> {
                     .output();
                 let text = if let Ok(out) = output {
                     if out.status.success() {
-                        format!("Battery Level: {}", String::from_utf8_lossy(&out.stdout).trim())
+                        format!(
+                            "Battery Level: {}",
+                            String::from_utf8_lossy(&out.stdout).trim()
+                        )
                     } else {
                         "Battery Level: N/A".to_string()
                     }
@@ -212,7 +285,10 @@ fn main() -> anyhow::Result<()> {
                 .output();
             let text = if let Ok(out) = output {
                 if out.status.success() {
-                    format!("Battery Level: {}", String::from_utf8_lossy(&out.stdout).trim())
+                    format!(
+                        "Battery Level: {}",
+                        String::from_utf8_lossy(&out.stdout).trim()
+                    )
                 } else {
                     "Battery Level: N/A".to_string()
                 }
@@ -226,27 +302,49 @@ fn main() -> anyhow::Result<()> {
                     .args(&command[1..])
                     .output();
                 if let Err(e) = result {
-                    let dialog = MessageDialog::new(Some(&*win_apply), DialogFlags::MODAL, MessageType::Error, ButtonsType::Ok, &format!("Error running the command: {}", e));
+                    let dialog = MessageDialog::new(
+                        Some(&*win_apply),
+                        DialogFlags::MODAL,
+                        MessageType::Error,
+                        ButtonsType::Ok,
+                        &format!("Error running the command: {}", e),
+                    );
                     dialog.run();
-                    unsafe { dialog.destroy(); }
+                    unsafe {
+                        dialog.destroy();
+                    }
                 }
             }
         });
 
         // Reset button logic
         reset_btn.connect_clicked(move |_| {
-            let result = std::process::Command::new("rivalcfg")
-                .arg("-r")
-                .output();
+            let result = std::process::Command::new("rivalcfg").arg("-r").output();
             if let Ok(out) = result {
                 let msg = String::from_utf8_lossy(&out.stdout).to_string();
-                let dialog = MessageDialog::new(Some(&*win_reset), DialogFlags::MODAL, MessageType::Info, ButtonsType::Ok, &msg);
+                let dialog = MessageDialog::new(
+                    Some(&*win_reset),
+                    DialogFlags::MODAL,
+                    MessageType::Info,
+                    ButtonsType::Ok,
+                    &msg,
+                );
                 dialog.run();
-                unsafe { dialog.destroy(); }
+                unsafe {
+                    dialog.destroy();
+                }
             } else {
-                let dialog = MessageDialog::new(Some(&*win_reset), DialogFlags::MODAL, MessageType::Error, ButtonsType::Ok, "Error resetting settings");
+                let dialog = MessageDialog::new(
+                    Some(&*win_reset),
+                    DialogFlags::MODAL,
+                    MessageType::Error,
+                    ButtonsType::Ok,
+                    "Error resetting settings",
+                );
                 dialog.run();
-                unsafe { dialog.destroy(); }
+                unsafe {
+                    dialog.destroy();
+                }
             }
         });
 
@@ -265,9 +363,17 @@ fn main() -> anyhow::Result<()> {
             } else {
                 "Error running rivalcfg CLI.".to_string()
             };
-            let dialog = MessageDialog::new(Some(&*win_show), DialogFlags::MODAL, MessageType::Info, ButtonsType::Ok, &msg);
+            let dialog = MessageDialog::new(
+                Some(&*win_show),
+                DialogFlags::MODAL,
+                MessageType::Info,
+                ButtonsType::Ok,
+                &msg,
+            );
             dialog.run();
-            unsafe { dialog.destroy(); }
+            unsafe {
+                dialog.destroy();
+            }
         });
     });
 
@@ -282,8 +388,14 @@ fn main() -> anyhow::Result<()> {
     // Update icon every 30 seconds
     let percent_item_clone = percent_item.clone();
     glib::timeout_add_local(Duration::from_secs(30), move || {
-        let level = get_battery_level().unwrap_or(0);
-        let icon_path = battery_icon_path(level);
+        let (level, charging) = get_battery_level().unwrap_or((0, false));
+        let icon_path = if charging {
+            let charging_svg = PathBuf::from("icons/charging.svg");
+            composite_battery_charging_svg(&battery_icon_path(level), &charging_svg)
+                .unwrap_or(battery_icon_path(level))
+        } else {
+            battery_icon_path(level)
+        };
         // Retry up to 5 times with 200ms delay if conversion fails
         let mut tries = 0;
         let png_path = loop {
@@ -292,7 +404,7 @@ fn main() -> anyhow::Result<()> {
                 None if tries < 5 => {
                     tries += 1;
                     std::thread::sleep(std::time::Duration::from_millis(200));
-                },
+                }
                 None => break None,
             }
         };
@@ -302,7 +414,10 @@ fn main() -> anyhow::Result<()> {
             std::io::stderr().flush().ok();
             indicator.set_icon(&png_path);
         } else {
-            eprintln!("[rivalcfg-tray] Warning: Failed to convert SVG to PNG for icon: {} after retries", icon_path.display());
+            eprintln!(
+                "[rivalcfg-tray] Warning: Failed to convert SVG to PNG for icon: {} after retries",
+                icon_path.display()
+            );
             use std::io::Write;
             std::io::stderr().flush().ok();
         }
