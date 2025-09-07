@@ -1,12 +1,57 @@
 use std::env;
+
+fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
+    let (level, charging) = get_battery_level().unwrap_or((0, false));
+    let icon_path = if charging {
+        let charging_svg = PathBuf::from("icons/charging.svg");
+        composite_battery_charging_svg(&battery_icon_path(level), &charging_svg)
+            .unwrap_or(battery_icon_path(level))
+    } else {
+        battery_icon_path(level)
+    };
+    // Retry up to 5 times with 200ms delay if conversion fails
+    let mut tries = 0;
+    let png_path = loop {
+        match svg_to_png_temp(&icon_path) {
+            Some(p) => break Some(p),
+            None if tries < 5 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            None => break None,
+        }
+    };
+    if let Some(png_path) = png_path {
+        // eprintln!("[rivalcfg-tray] Setting icon: {}", png_path);
+        use std::io::Write;
+        std::io::stderr().flush().ok();
+        indicator.set_icon(&png_path);
+    } else {
+        eprintln!(
+            "[rivalcfg-tray] Warning: Failed to convert SVG to PNG for icon: {} after retries",
+            icon_path.display()
+        );
+        use std::io::Write;
+        std::io::stderr().flush().ok();
+    }
+    Some((level, charging))
+}
+
 // use std::io::Stdout;
 fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     use std::ffi::OsStr;
-    use std::process::Command;
     use std::fs;
+    use std::process::Command;
     use std::time::SystemTime;
 
     let mut tmp_path = env::temp_dir();
+    tmp_path.push("rivalcfg-tray");
+    std::fs::create_dir_all(&tmp_path).ok()?;
+
+    // Remove the contents of the directory to avoid clutter
+    let _ = fs::remove_dir_all(&tmp_path);
+    std::fs::create_dir_all(&tmp_path).ok()?;
+
     let file_stem = svg_path
         .file_stem()
         .and_then(OsStr::to_str)
@@ -17,9 +62,6 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
         .ok()?
         .as_secs();
     tmp_path.push(format!("{}_{}_tray.png", file_stem, timestamp));
-
-    // Remove any existing PNG before generating a new one
-    let _ = fs::remove_file(&tmp_path);
 
     let status = Command::new("rsvg-convert")
         .arg("-w")
@@ -131,18 +173,19 @@ fn main() -> anyhow::Result<()> {
 
     // Create AppIndicator
     let (level, charging) = get_battery_level().unwrap_or((0, false));
-    let icon_path = if charging {
-        let charging_svg = PathBuf::from("icons/charging.svg");
-        composite_battery_charging_svg(&battery_icon_path(level), &charging_svg)
-            .unwrap_or(battery_icon_path(level))
-    } else {
-        battery_icon_path(level)
-    };
-    let png_path = svg_to_png_temp(&icon_path).expect("Failed to convert SVG to PNG");
+
+    // Create menu
     let menu = gtk::Menu::new();
     let percent_item = gtk::MenuItem::with_label(&format!("Battery: {}%", level));
     percent_item.set_sensitive(false);
     menu.append(&percent_item);
+
+    let status_item = gtk::MenuItem::with_label(&format!(
+        "Status: {}",
+        if charging { "Charging" } else { "Discharging" }
+    ));
+    status_item.set_sensitive(false);
+    menu.append(&status_item);
 
     let config_item = gtk::MenuItem::with_label("Config");
     menu.append(&config_item);
@@ -153,6 +196,15 @@ fn main() -> anyhow::Result<()> {
         gtk::main_quit();
     });
     menu.show_all();
+
+    let indicator = Indicator::builder("rivalcfg-tray")
+        .category(IndicatorCategory::ApplicationStatus)
+        .menu(&menu)
+        .status(IndicatorStatus::Active)
+        .title(&format!("Battery: {}%", level))
+        .build();
+
+    generate_tray_icon(&indicator);
 
     // Config window logic
     config_item.connect_activate(|_| {
@@ -377,52 +429,17 @@ fn main() -> anyhow::Result<()> {
         });
     });
 
-    let indicator = Indicator::builder("rivalcfg-tray")
-        .category(IndicatorCategory::ApplicationStatus)
-        .menu(&menu)
-        .icon(&png_path, "Battery")
-        .status(IndicatorStatus::Active)
-        .title(&format!("Battery: {}%", level))
-        .build();
-
     // Update icon every 30 seconds
     let percent_item_clone = percent_item.clone();
     glib::timeout_add_local(Duration::from_secs(30), move || {
-        let (level, charging) = get_battery_level().unwrap_or((0, false));
-        let icon_path = if charging {
-            let charging_svg = PathBuf::from("icons/charging.svg");
-            composite_battery_charging_svg(&battery_icon_path(level), &charging_svg)
-                .unwrap_or(battery_icon_path(level))
-        } else {
-            battery_icon_path(level)
-        };
-        // Retry up to 5 times with 200ms delay if conversion fails
-        let mut tries = 0;
-        let png_path = loop {
-            match svg_to_png_temp(&icon_path) {
-                Some(p) => break Some(p),
-                None if tries < 5 => {
-                    tries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-                None => break None,
-            }
-        };
-        if let Some(png_path) = png_path {
-            eprintln!("[rivalcfg-tray] Setting icon: {}", png_path);
-            use std::io::Write;
-            std::io::stderr().flush().ok();
-            indicator.set_icon(&png_path);
-        } else {
-            eprintln!(
-                "[rivalcfg-tray] Warning: Failed to convert SVG to PNG for icon: {} after retries",
-                icon_path.display()
-            );
-            use std::io::Write;
-            std::io::stderr().flush().ok();
-        }
+        let (level, charging) = generate_tray_icon(&indicator).unwrap_or((0, false));
         indicator.set_title(Some(&format!("Battery: {}%", level)));
         percent_item_clone.set_label(&format!("Battery: {}%", level));
+        let status_text = format!(
+            "Status: {}",
+            if charging { "Charging" } else { "Discharging" }
+        );
+        status_item.set_label(&status_text);
         ControlFlow::Continue
     });
 
