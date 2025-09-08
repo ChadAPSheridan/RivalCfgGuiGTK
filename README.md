@@ -17,7 +17,31 @@ This is a Rust application using GTK4 for the GUI. It interacts with the rivalcf
 2. Run the application: `cargo run`
 
 ## Flatpak
-- The project is structured for easy Flatpak packaging. Flatpaks will be the intended format for official releases.
+The project is structured for easy Flatpak packaging. Flatpaks are the intended format for official releases.
+
+### Building the Flatpak
+1. First, build the Rust application:
+   ```bash
+   cargo build --release
+   ```
+
+2. Set up the third-party dependencies:
+   ```bash
+   mkdir -p third_party
+   cd third_party
+   git clone https://github.com/flozz/rivalcfg.git
+   cd ..
+   ```
+
+3. Build the Flatpak:
+   ```bash
+   flatpak-builder build-dir rivalcfg-tray.flatpak.yaml --force-clean
+   ```
+
+The build process will:
+- Use the pre-built Rust binary from `target/release`
+- Install the rivalcfg Python package from the local `third_party` directory
+- Package everything into a Flatpak
 
 ## Roadmap
 - The tray icon updates to reflect the current battery level on a more dynamic scale (currently the 25% marks seem a touch confusing at a glance).
