@@ -1,33 +1,93 @@
-app-id: com.example.rivalcfgtray
+app-id: io.github.chadapsheridan.rivalcfgtray
 runtime: org.gnome.Platform
 runtime-version: '48'
 sdk: org.gnome.Sdk
 command: rivalcfg-tray
+finish-args:
+  # GTK
+  - --share=ipc
+  # X11/Wayland access
+  - --socket=fallback-x11
+  - --socket=wayland
+  # System tray
+  - --socket=session-bus
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # USB access for rivalcfg
+  - --device=all
+  - --filesystem=host-os
+  - --system-talk-name=org.freedesktop.UPower
+  # Allow access to USB devices via udev
+  - --device=usb
+  - --share=network
+  # Udev access for device detection
+  - --filesystem=/run/udev:ro
+  - --filesystem=/etc/udev/rules.d:ro
+  - --filesystem=/usr/lib/udev/rules.d:ro
+  - --filesystem=/run/dbus:ro
+  - --filesystem=/sys:ro
+  # Python environment setup
+  - --env=PYTHONPATH=/app/lib/python3.12/site-packages:/app/lib/python3.12/lib-dynload
+  - --env=PYTHONHOME=/app
+  - --env=PATH=/app/bin:/usr/bin
+  # Temporary directory access for icon conversion
+  - --filesystem=/tmp
 modules:
+  # Dependencies
+  - name: librsvg
+    buildsystem: simple
+    build-commands:
+      - install -D /usr/bin/rsvg-convert /app/bin/rsvg-convert
+    sources:
+      - type: dir
+        path: .
+        skip: ['*']
+
+  # System libraries
+  - name: system-libs
+    buildsystem: simple
+    build-commands:
+      - install -d /app/lib
+      - find . -type f,l -exec install -D {} /app/lib/{} \;
+    sources:
+      - type: dir
+        path: lib
+
   # Rust app
   - name: rivalcfg-tray
-    buildsystem: cargo
+    buildsystem: simple
+    build-commands:
+      - install -D target/release/rivalcfg-tray /app/bin/rivalcfg-tray
     sources:
-      - type: git
-        url: https://github.com/ChadAPSheridan/RivalCfgGuiGTK.git
-    build-args:
-      - --release
+      - type: dir
+        path: .
 
   # Python rivalcfg CLI
   - name: rivalcfg
     buildsystem: simple
     build-commands:
-      - pip3 install --prefix=/app rivalcfg
+      # Install rivalcfg Python package
+      - cd third_party/rivalcfg && PYTHONPATH=/app/lib/python3.12/site-packages python3 setup.py install --prefix=/app
+      # Install udev rules
+      - install -D third_party/rivalcfg/50-rivalcfg.rules -t /app/lib/udev/rules.d/
+      # Make rivalcfg Python module accessible
+      - mkdir -p /app/lib/python3.12/site-packages/rivalcfg
+      - cp -r third_party/rivalcfg/rivalcfg/* /app/lib/python3.12/site-packages/rivalcfg/
     sources:
-      - type: git
-        url: https://github.com/rivalcfg/rivalcfg.git
+      - type: dir
+        path: .
 
   # Icons and desktop file
   - name: resources
     buildsystem: simple
     build-commands:
-      - install -D rivalcfg-tray.desktop /app/share/applications/com.example.rivalcfgtray.desktop
-      - install -D icons/app_icon.png /app/share/icons/hicolor/128x128/apps/com.example.rivalcfgtray.png
+      - install -D rivalcfg-tray.desktop /app/share/applications/io.github.chadapsheridan.rivalcfgtray.desktop
+      - install -D icons/app_icon.png /app/share/icons/hicolor/128x128/apps/io.github.chadapsheridan.rivalcfgtray.png
+      - install -D io.github.chadapsheridan.rivalcfgtray.appdata.xml /app/share/metainfo/io.github.chadapsheridan.rivalcfgtray.appdata.xml
+      # Install icons in multiple locations for maximum compatibility
+      - mkdir -p /app/share/icons/rivalcfgtray
+      - cp -r icons/* /app/share/icons/rivalcfgtray/
+      - mkdir -p /app/bin/icons
+      - cp -r icons/* /app/bin/icons/
     sources:
       - type: dir
         path: .

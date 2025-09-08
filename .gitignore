@@ -34,3 +34,6 @@ Cargo.lock
 # Test coverage
 *.profraw
 /coverage/
+
+# Third party dependencies
+/third_party/

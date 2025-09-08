@@ -3,7 +3,8 @@ use std::env;
 fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
     let (level, charging) = get_battery_level().unwrap_or((0, false));
     let icon_path = if charging {
-        let charging_svg = PathBuf::from("icons/charging.svg");
+        let charging_svg = find_icon("charging.svg")
+            .unwrap_or_else(|| PathBuf::from("icons/charging.svg"));
         composite_battery_charging_svg(&battery_icon_path(level), &charging_svg)
             .unwrap_or(battery_icon_path(level))
     } else {
@@ -39,45 +40,69 @@ fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
 
 // use std::io::Stdout;
 fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
-    use std::ffi::OsStr;
-    use std::fs;
     use std::process::Command;
-    use std::time::SystemTime;
 
-    let mut tmp_path = env::temp_dir();
-    tmp_path.push("rivalcfg-tray");
-    std::fs::create_dir_all(&tmp_path).ok()?;
+    // Create a temp file with a unique name
+    let temp_file = match tempfile::Builder::new()
+        .prefix("rivalcfg-tray-")
+        .suffix(".png")
+        .tempfile() {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!("[rivalcfg-tray] Failed to create temp file: {}", e);
+                return None;
+            }
+    };
 
-    // Remove the contents of the directory to avoid clutter
-    let _ = fs::remove_dir_all(&tmp_path);
-    std::fs::create_dir_all(&tmp_path).ok()?;
+    let temp_path = temp_file.path().to_path_buf();
+    eprintln!("[rivalcfg-tray] Converting SVG to PNG: {} -> {}", svg_path.display(), temp_path.display());
 
-    let file_stem = svg_path
-        .file_stem()
-        .and_then(OsStr::to_str)
-        .unwrap_or("icon");
-    // Add a timestamp to avoid pesky caching issues
-    let timestamp = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    tmp_path.push(format!("{}_{}_tray.png", file_stem, timestamp));
-
-    let status = Command::new("rsvg-convert")
+    // Convert SVG to PNG
+    let output = Command::new("rsvg-convert")
         .arg("-w")
         .arg("64")
         .arg("-h")
         .arg("64")
         .arg("-o")
-        .arg(&tmp_path)
+        .arg(&temp_path)
         .arg(svg_path)
-        .status()
+        .output()
         .ok()?;
-    if status.success() {
-        Some(tmp_path.to_str()?.to_string())
-    } else {
-        None
+
+    if !output.status.success() {
+        eprintln!(
+            "[rivalcfg-tray] rsvg-convert failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return None;
     }
+
+    if !temp_path.exists() {
+        eprintln!("[rivalcfg-tray] PNG file was not created: {}", temp_path.display());
+        return None;
+    }
+
+    eprintln!("[rivalcfg-tray] Successfully created PNG: {}", temp_path.display());
+    
+    // Keep the temp file around by leaking it
+    std::mem::forget(temp_file);
+    
+    Command::new("rsvg-convert")
+        .arg("64")
+        .arg("-o")
+        .arg(&temp_path)
+        .arg(svg_path)
+        .output()
+        .ok()?;
+
+    if !temp_path.exists() {
+        eprintln!("[rivalcfg-tray] PNG file was not created: {}", temp_path.display());
+        return None;
+    }
+
+    eprintln!("[rivalcfg-tray] Successfully created PNG: {}", temp_path.display());
+    Some(temp_path.to_str()?.to_string())
 }
 use appindicator3::prelude::*;
 use appindicator3::{Indicator, IndicatorCategory, IndicatorStatus};
@@ -88,15 +113,24 @@ use std::process::Command;
 use std::time::Duration;
 
 fn get_battery_level() -> Option<(u8, bool)> {
+    eprintln!("[rivalcfg-tray] Attempting to run rivalcfg --battery-level");
     let output = Command::new("rivalcfg")
         .arg("--battery-level")
         .output()
+        .map_err(|e| {
+            eprintln!("[rivalcfg-tray] Failed to execute rivalcfg: {}", e);
+            e
+        })
         .ok()?;
 
     if !output.status.success() {
+        eprintln!("[rivalcfg-tray] rivalcfg command failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr));
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!("[rivalcfg-tray] rivalcfg output: {}", stdout);
     let charging_status = get_battery_status(&stdout)?;
     let second_last_word = stdout.split_whitespace().rev().nth(1)?;
     let trimmed = second_last_word.trim_end_matches('%');
@@ -115,21 +149,71 @@ fn get_battery_status(stdout: &str) -> Option<bool> {
     }
 }
 
-fn battery_icon_path(level: u8) -> PathBuf {
-    let base = "icons";
-    if level > 90 {
-        PathBuf::from(format!("{}/battery-100.svg", base))
-    } else if level > 74 {
-        PathBuf::from(format!("{}/battery-75.svg", base))
-    } else if level > 49 {
-        PathBuf::from(format!("{}/battery-50.svg", base))
-    } else if level > 24 {
-        PathBuf::from(format!("{}/battery-25.svg", base))
-    } else if level > 9 {
-        PathBuf::from(format!("{}/battery-warn.svg", base))
-    } else {
-        PathBuf::from(format!("{}/battery-0.svg", base))
+fn find_icon(name: &str) -> Option<PathBuf> {
+    let mut possible_paths = vec![
+        // Current directory
+        PathBuf::from(format!("icons/{}", name)),
+        // Executable directory relative
+        PathBuf::from(format!("bin/icons/{}", name)),
+        // Executable directory absolute
+        std::env::current_exe().ok().and_then(|path| {
+            path.parent().map(|dir| dir.join("icons").join(name))
+        })?,
+        // Flatpak directories
+        PathBuf::from(format!("/app/bin/icons/{}", name)),
+        PathBuf::from(format!("/app/share/icons/rivalcfgtray/{}", name)),
+        // System-wide installation
+        PathBuf::from(format!("/usr/share/rivalcfgtray/icons/{}", name)),
+    ];
+    
+    // Also try relative to the executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            possible_paths.push(exe_dir.join("icons").join(name));
+            // Try one directory up
+            if let Some(parent) = exe_dir.parent() {
+                possible_paths.push(parent.join("icons").join(name));
+                possible_paths.push(parent.join("share").join("icons").join("rivalcfgtray").join(name));
+            }
+        }
     }
+    
+    // Try relative to the current working directory with more parent directories
+    let mut current = std::env::current_dir().ok();
+    while let Some(dir) = current {
+        possible_paths.push(dir.join("icons").join(name));
+        current = dir.parent().map(|p| p.to_path_buf());
+    };
+
+    for path in &possible_paths {
+        if path.exists() {
+            eprintln!("[rivalcfg-tray] Found icon at: {}", path.display());
+            return Some(path.clone());
+        }
+    }
+    eprintln!("[rivalcfg-tray] Warning: Could not find icon '{}' in any of these locations:", name);
+    for path in &possible_paths {
+        eprintln!("[rivalcfg-tray]   - {}", path.display());
+    }
+    None
+}
+
+fn battery_icon_path(level: u8) -> PathBuf {
+    let name = if level > 90 {
+        "battery-100.svg"
+    } else if level > 74 {
+        "battery-75.svg"
+    } else if level > 49 {
+        "battery-50.svg"
+    } else if level > 24 {
+        "battery-25.svg"
+    } else if level > 9 {
+        "battery-warn.svg"
+    } else {
+        "battery-0.svg"
+    };
+
+    find_icon(name).unwrap_or_else(|| PathBuf::from(format!("icons/{}", name)))
 }
 
 fn composite_battery_charging_svg(
