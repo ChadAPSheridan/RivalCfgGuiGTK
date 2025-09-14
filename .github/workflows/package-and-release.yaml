@@ -1,0 +1,471 @@
+name: Package and Release
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.9.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libgtk-3-dev \
+          libayatana-appindicator3-dev \
+          librsvg2-bin \
+          rpm \
+          alien \
+          build-essential \
+          devscripts \
+          debhelper \
+          dh-make \
+          fakeroot \
+          lintian
+    
+    - name: Load configuration and set version
+      id: config
+      run: |
+        source .github/workflows/config.conf
+        
+        # Use workflow input version if provided, otherwise use config
+        if [ "${{ github.event.inputs.version }}" != "" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION="$PKGVER"
+        fi
+        
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "PKGNAME=$PKGNAME" >> $GITHUB_OUTPUT
+        echo "BUILD_DATE=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
+        
+        # Update config.conf with new version
+        sed -i "s/VERSION=.*/VERSION=$VERSION/" .github/workflows/config.conf
+        sed -i "s/PKGVER=.*/PKGVER=$VERSION/" .github/workflows/config.conf
+    
+    - name: Update version placeholders
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+        BUILD_DATE="${{ steps.config.outputs.BUILD_DATE }}"
+        
+        # Update PKGBUILD and appdata with actual version
+        sed -i "s/{{VERSION}}/$VERSION/g" PKGBUILD io.github.chadapsheridan.rivalcfgtray.appdata.xml
+        sed -i "s/{{BUILD_DATE}}/$BUILD_DATE/g" io.github.chadapsheridan.rivalcfgtray.appdata.xml
+        
+        # Also update Cargo.toml version
+        sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+    
+    - name: Build Rust project
+      run: |
+        # Clean previous build artifacts
+        rm -rf target pkg
+        
+        # Build the project
+        echo "Building ${{ steps.config.outputs.PKGNAME }} version ${{ steps.config.outputs.VERSION }}..."
+        cargo build --release
+
+    - name: Prepare package directory
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+        
+        # Create package directory structure
+        echo "Preparing package directory..."
+        mkdir -p pkg/usr/bin
+        mkdir -p pkg/usr/share/applications
+        mkdir -p pkg/usr/share/icons/hicolor/256x256/apps
+        mkdir -p pkg/usr/share/metainfo
+        mkdir -p pkg/usr/share/icons/hicolor/scalable/apps
+        
+        # Install the binary
+        install -Dm755 target/release/rivalcfg-tray pkg/usr/bin/rivalcfg-tray
+        
+        # Install the desktop entry
+        install -Dm644 rivalcfg-tray.desktop pkg/usr/share/applications/rivalcfg-tray.desktop
+        
+        # Install the appdata file
+        install -Dm644 io.github.chadapsheridan.rivalcfgtray.appdata.xml pkg/usr/share/metainfo/io.github.chadapsheridan.rivalcfgtray.appdata.xml
+        
+        # Install the PNG icons
+        install -Dm644 icons/app_icon.png pkg/usr/share/icons/hicolor/256x256/apps/rivalcfg-tray.png
+        # Also install a copy named to match the desktop/appdata id so the Desktop Icon= resolves
+        install -Dm644 icons/app_icon.png pkg/usr/share/icons/hicolor/256x256/apps/io.github.chadapsheridan.rivalcfgtray.png
+        
+        # Install SVG icons into both scalable and sized directories
+        for icon in icons/*.svg; do
+          base=$(basename "$icon")
+          # Install as scalable SVG so icon themes can pick them
+          install -Dm644 "$icon" "pkg/usr/share/icons/hicolor/scalable/apps/${base}"
+          
+          # Determine numeric size if present, e.g. battery-50.svg -> 50
+          size=$(echo "$base" | sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p')
+          if [ -n "$size" ] && [ "$size" -gt 0 ] && [ "$size" -le 512 ]; then
+            mkdir -p "pkg/usr/share/icons/hicolor/${size}x${size}/apps"
+            install -Dm644 "$icon" "pkg/usr/share/icons/hicolor/${size}x${size}/apps/${base}"
+          fi
+        done
+        
+        echo "Package directory prepared at pkg/"
+        echo "Build and preparation complete."
+    
+    - name: Create source tarball for release
+      id: tarball
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+        TARBALL_NAME="RivalCfgGuiGTK-$VERSION"
+        
+        # Create clean source directory
+        mkdir -p /tmp/$TARBALL_NAME
+        
+        # Copy source files (exclude build artifacts and git)
+        rsync -av --exclude='.git' --exclude='target' --exclude='pkg' \
+          --exclude='.github' --exclude='*.tar.gz' \
+          ./ /tmp/$TARBALL_NAME/
+        
+        # Create tarball
+        cd /tmp
+        tar -czf $TARBALL_NAME.tar.gz $TARBALL_NAME/
+        
+        # Calculate checksum
+        SHA256SUM=$(sha256sum $TARBALL_NAME.tar.gz | cut -d' ' -f1)
+        
+        # Move tarball to workspace
+        mv $TARBALL_NAME.tar.gz $GITHUB_WORKSPACE/
+        
+        echo "TARBALL_NAME=$TARBALL_NAME" >> $GITHUB_OUTPUT
+        echo "SHA256SUM=$SHA256SUM" >> $GITHUB_OUTPUT
+        echo "Generated tarball: $TARBALL_NAME.tar.gz"
+        echo "SHA256: $SHA256SUM"
+    
+    - name: Update PKGBUILD with checksum
+      run: |
+        SHA256SUM="${{ steps.tarball.outputs.SHA256SUM }}"
+        sed -i "s/{{SHA256SUM}}/$SHA256SUM/g" PKGBUILD
+        
+        echo "Updated PKGBUILD with checksum: $SHA256SUM"
+        cat PKGBUILD | grep sha256sums
+    
+    - name: Build DEB package
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+        
+        # Create debian package structure
+        mkdir -p debian-pkg/DEBIAN
+        mkdir -p debian-pkg/usr
+        
+        # Copy built files from pkg/ directory
+        cp -r pkg/usr/* debian-pkg/usr/
+        
+        # Create control file
+        cat > debian-pkg/DEBIAN/control << EOF
+        Package: rivalcfg-tray
+        Version: $VERSION
+        Section: utils
+        Priority: optional
+        Architecture: amd64
+        Depends: libgtk-3-0, libayatana-appindicator3-1, librsvg2-bin, rivalcfg
+        Maintainer: Chad Sheridan <chad.sheridan@cysec.ca>
+        Description: System tray application for SteelSeries mouse configuration
+         RivalCfg Tray is a system tray application that provides easy access to 
+         SteelSeries mouse configuration. It displays battery status and allows 
+         quick access to mouse settings directly from your system tray.
+        EOF
+        
+        # Create postinst script to update icon cache
+        cat > debian-pkg/DEBIAN/postinst << 'EOF'
+        #!/bin/bash
+        set -e
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -q /usr/share/icons/hicolor || true
+        fi
+        EOF
+        chmod 755 debian-pkg/DEBIAN/postinst
+        
+        # Build the package
+        dpkg-deb --build debian-pkg rivalcfg-tray_${VERSION}_amd64.deb
+        
+        echo "Built DEB package: rivalcfg-tray_${VERSION}_amd64.deb"
+        ls -la *.deb
+    
+    - name: Build RPM package
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+        
+        # Create RPM build structure
+        mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+        
+        # Create spec file
+        cat > ~/rpmbuild/SPECS/rivalcfg-tray.spec << EOF
+        Name:           rivalcfg-tray
+        Version:        $VERSION
+        Release:        1%{?dist}
+        Summary:        System tray application for SteelSeries mouse configuration
+        
+        License:        GPLv3+
+        URL:            https://github.com/ChadsAPSheridan/RivalCfgGuiGTK
+        Source0:        %{name}-%{version}.tar.gz
+        
+        BuildRequires:  cargo
+        BuildRequires:  rust
+        BuildRequires:  gtk3-devel
+        BuildRequires:  libayatana-appindicator-gtk3-devel
+        
+        Requires:       gtk3
+        Requires:       libayatana-appindicator-gtk3
+        Requires:       librsvg2-tools
+        Requires:       rivalcfg
+        
+        %description
+        RivalCfg Tray is a system tray application that provides easy access to 
+        SteelSeries mouse configuration. It displays battery status and allows 
+        quick access to mouse settings directly from your system tray.
+        
+        %prep
+        %setup -q
+        
+        %build
+        cargo build --release --locked
+        
+        %install
+        rm -rf \$RPM_BUILD_ROOT
+        
+        # Install binary
+        install -Dm755 target/release/rivalcfg-tray \$RPM_BUILD_ROOT%{_bindir}/rivalcfg-tray
+        
+        # Install desktop file and appdata
+        install -Dm644 rivalcfg-tray.desktop \$RPM_BUILD_ROOT%{_datadir}/applications/rivalcfg-tray.desktop
+        install -Dm644 io.github.chadapsheridan.rivalcfgtray.appdata.xml \$RPM_BUILD_ROOT%{_metainfodir}/io.github.chadapsheridan.rivalcfgtray.appdata.xml
+        
+        # Install icons
+        install -Dm644 icons/app_icon.png \$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/256x256/apps/rivalcfg-tray.png
+        install -Dm644 icons/app_icon.png \$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/256x256/apps/io.github.chadapsheridan.rivalcfgtray.png
+        
+        for svg in icons/*.svg; do
+            base=\$(basename "\$svg")
+            size=\$(echo "\$base" | sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p')
+            if [ -n "\$size" ]; then
+                install -Dm644 "\$svg" "\$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/\${size}x\${size}/apps/\${base}"
+            fi
+            install -Dm644 "\$svg" "\$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/scalable/apps/\${base}"
+        done
+        
+        %post
+        /bin/touch --no-create %{_datadir}/icons/hicolor &>/dev/null || :
+        
+        %postun
+        if [ \$1 -eq 0 ] ; then
+            /bin/touch --no-create %{_datadir}/icons/hicolor &>/dev/null
+            /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
+        fi
+        
+        %posttrans
+        /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
+        
+        %files
+        %{_bindir}/rivalcfg-tray
+        %{_datadir}/applications/rivalcfg-tray.desktop
+        %{_metainfodir}/io.github.chadapsheridan.rivalcfgtray.appdata.xml
+        %{_datadir}/icons/hicolor/*/apps/*
+        
+        %changelog
+        * $(date +'%a %b %d %Y') Chad Sheridan <chad.sheridan@cysec.ca> - $VERSION-1
+        - Release $VERSION
+        
+        EOF
+        
+        # Copy source to SOURCES
+        cp ${{ steps.tarball.outputs.TARBALL_NAME }}.tar.gz ~/rpmbuild/SOURCES/rivalcfg-tray-$VERSION.tar.gz
+        
+        # Build RPM
+        rpmbuild -ba ~/rpmbuild/SPECS/rivalcfg-tray.spec
+        
+        # Copy built RPM to workspace
+        cp ~/rpmbuild/RPMS/x86_64/rivalcfg-tray-*.rpm ./
+        
+        echo "Built RPM package:"
+        ls -la *.rpm
+    
+    - name: Create GitHub Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ steps.config.outputs.VERSION }}
+        release_name: Release v${{ steps.config.outputs.VERSION }}
+        body: |
+          ## RivalCfg Tray v${{ steps.config.outputs.VERSION }}
+          
+          ### Installation
+          
+          **Arch Linux (AUR):**
+          ```bash
+          yay -S rivalcfg-tray
+          # or
+          paru -S rivalcfg-tray
+          ```
+          
+          **Debian/Ubuntu:**
+          Download and install the `.deb` package from the assets below.
+          
+          **Fedora/RHEL:**
+          Download and install the `.rpm` package from the assets below.
+          
+          **From Source:**
+          Download the source tarball and build with cargo.
+          
+          ### Dependencies
+          - `rivalcfg` - SteelSeries mouse configuration tool
+          - `librsvg` (or `librsvg2-bin`/`librsvg2-tools`) - For SVG to PNG conversion
+          - GTK3 and AppIndicator libraries
+          
+          ### Changes
+          - System tray integration for SteelSeries mouse battery monitoring
+          - GTK-based interface with Wayland compatibility
+          - Real-time battery level display with charging status
+          
+          For detailed installation instructions and troubleshooting, see the [README](https://github.com/ChadsAPSheridan/RivalCfgGuiGTK/blob/main/README.md).
+        draft: false
+        prerelease: false
+    
+    - name: Upload Release Assets
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+        
+        # Upload source tarball
+        gh release upload v$VERSION ${{ steps.tarball.outputs.TARBALL_NAME }}.tar.gz
+        
+        # Upload DEB package
+        gh release upload v$VERSION rivalcfg-tray_${VERSION}_amd64.deb
+        
+        # Upload RPM package
+        gh release upload v$VERSION rivalcfg-tray-${VERSION}-1.*.rpm
+        
+        # Upload updated PKGBUILD for AUR
+        gh release upload v$VERSION PKGBUILD
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Prepare AUR package
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+        
+        # Create AUR directory structure
+        mkdir -p aur-package
+        cd aur-package
+        
+        # Copy PKGBUILD and related files
+        cp ../PKGBUILD .
+        cp ../rivalcfg-tray.desktop .
+        cp ../io.github.chadapsheridan.rivalcfgtray.appdata.xml .
+        
+        # Create .SRCINFO file (needed for AUR)
+        if command -v makepkg >/dev/null 2>&1; then
+          makepkg --printsrcinfo > .SRCINFO
+        else
+          # Fallback: create basic .SRCINFO manually
+          cat > .SRCINFO << EOF
+        pkgbase = rivalcfg-tray
+        	pkgdesc = A GTK-based GUI for Rivalcfg tray indicator
+        	pkgver = $VERSION
+        	pkgrel = 1
+        	url = https://github.com/ChadsAPSheridan/RivalCfgGuiGTK
+        	arch = x86_64
+        	license = GPL
+        	makedepends = cargo
+        	makedepends = rust
+        	depends = gtk3
+        	depends = libayatana-appindicator3
+        	depends = hidapi
+        	depends = rivalcfg
+        	depends = librsvg
+        	source = rivalcfg-tray-$VERSION.tar.gz::https://github.com/ChadsAPSheridan/RivalCfgGuiGTK/archive/refs/tags/v$VERSION.tar.gz
+        	sha256sums = ${{ steps.tarball.outputs.SHA256SUM }}
+        
+        pkgname = rivalcfg-tray
+        EOF
+        fi
+        
+        echo "AUR package prepared:"
+        ls -la
+    
+    - name: Publish to AUR
+      if: ${{ env.AUR_SSH_KEY != '' }}
+      env:
+        AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        GIT_SSH_COMMAND: ssh -i ~/.ssh/aur
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+        
+        # Set up SSH for AUR
+        mkdir -p ~/.ssh
+        echo "$AUR_SSH_KEY" > ~/.ssh/aur
+        chmod 600 ~/.ssh/aur
+        
+        # Add AUR to known hosts
+        ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+        
+        # Configure git
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # Clone AUR repository
+        cd /tmp
+        GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git clone ssh://aur@aur.archlinux.org/rivalcfg-tray.git aur-repo || {
+          echo "AUR repository not found, creating new package..."
+          mkdir aur-repo
+          cd aur-repo
+          git init
+          git remote add origin ssh://aur@aur.archlinux.org/rivalcfg-tray.git
+        }
+        
+        cd aur-repo
+        
+        # Copy package files
+        cp $GITHUB_WORKSPACE/aur-package/* .
+        
+        # Commit and push
+        git add .
+        git commit -m "Update to version $VERSION" || {
+          echo "No changes to commit"
+          exit 0
+        }
+        
+        GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git push origin master
+        
+        echo "Successfully published to AUR!"
+    
+    - name: Clean up
+      if: always()
+      run: |
+        # Clean up sensitive files
+        rm -f ~/.ssh/aur
+        rm -rf /tmp/aur-repo
+        
+        echo "Workflow completed successfully!"
+        echo "Release v${{ steps.config.outputs.VERSION }} has been created with:"
+        echo "- Source tarball"
+        echo "- DEB package for Debian/Ubuntu"
+        echo "- RPM package for Fedora/RHEL"
+        echo "- Published to AUR (if configured)"
