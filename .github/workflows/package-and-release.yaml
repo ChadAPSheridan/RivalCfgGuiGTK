@@ -433,6 +433,7 @@ jobs:
         echo "Copying package files..."
         # Copy package files
         cp $GITHUB_WORKSPACE/aur-package/* .
+        cp $GITHUB_WORKSPACE/aur-package/.* .
         
         echo "Files in AUR repository:"
         ls -la
