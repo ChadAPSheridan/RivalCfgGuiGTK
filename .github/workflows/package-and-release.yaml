@@ -212,10 +212,7 @@ jobs:
       run: |
         VERSION="${{ steps.config.outputs.VERSION }}"
         
-        # Install RPM build dependencies
-        sudo apt-get install -y rpm-build
-        
-        # Create RPM build structure
+        # Create RPM build structure (rpm package is already installed in system dependencies)
         mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
         
         # Create spec file
