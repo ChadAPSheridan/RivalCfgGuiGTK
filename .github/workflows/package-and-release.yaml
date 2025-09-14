@@ -73,7 +73,7 @@ jobs:
         VERSION="${{ steps.config.outputs.VERSION }}"
         BUILD_DATE="${{ steps.config.outputs.BUILD_DATE }}"
         
-        # Update PKGBUILD and appdata with actual version
+        # Update PKGBUILD and appdata with actual version (but not checksum yet)
         sed -i "s/{{VERSION}}/$VERSION/g" PKGBUILD io.github.chadapsheridan.rivalcfgtray.appdata.xml
         sed -i "s/{{BUILD_DATE}}/$BUILD_DATE/g" io.github.chadapsheridan.rivalcfgtray.appdata.xml
         
@@ -160,14 +160,6 @@ jobs:
         echo "SHA256SUM=$SHA256SUM" >> $GITHUB_OUTPUT
         echo "Generated tarball: $TARBALL_NAME.tar.gz"
         echo "SHA256: $SHA256SUM"
-    
-    - name: Update PKGBUILD with checksum
-      run: |
-        SHA256SUM="${{ steps.tarball.outputs.SHA256SUM }}"
-        sed -i "s/{{SHA256SUM}}/$SHA256SUM/g" PKGBUILD
-        
-        echo "Updated PKGBUILD with checksum: $SHA256SUM"
-        cat PKGBUILD | grep sha256sums
     
     - name: Build DEB package
       run: |
@@ -333,9 +325,29 @@ jobs:
           ${{ steps.tarball.outputs.TARBALL_NAME }}.tar.gz
           rivalcfg-tray_${{ steps.config.outputs.VERSION }}_amd64.deb
           rivalcfg-tray-${{ steps.config.outputs.VERSION }}-1.*.rpm
-          PKGBUILD
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Update PKGBUILD with correct checksum for release tarball
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+        
+        # Download the tarball from the release to get the actual checksum
+        sleep 10  # Give GitHub a moment to process the release
+        
+        # Download the release tarball
+        wget "https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/v${VERSION}/RivalCfgGuiGTK-${VERSION}.tar.gz" -O "release-tarball.tar.gz"
+        
+        # Calculate checksum of the actual release tarball
+        RELEASE_SHA256SUM=$(sha256sum release-tarball.tar.gz | cut -d' ' -f1)
+        
+        # Update PKGBUILD with the correct source URL and checksum
+        sed -i "s|source=.*|source=(\"https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/v${VERSION}/RivalCfgGuiGTK-${VERSION}.tar.gz\")|g" PKGBUILD
+        sed -i "s/{{SHA256SUM}}/$RELEASE_SHA256SUM/g" PKGBUILD
+        
+        echo "Updated PKGBUILD with release tarball checksum: $RELEASE_SHA256SUM"
+        echo "PKGBUILD source and checksum:"
+        grep -E "(source=|sha256sums=)" PKGBUILD
     
     - name: Prepare AUR package
       run: |
@@ -354,24 +366,27 @@ jobs:
         if command -v makepkg >/dev/null 2>&1; then
           makepkg --printsrcinfo > .SRCINFO
         else
+          # Get the actual checksum from the updated PKGBUILD
+          RELEASE_SHA256SUM=$(grep sha256sums PKGBUILD | sed 's/.*(\|).*//g' | tr -d "'\"")
+          
           # Fallback: create basic .SRCINFO manually
           cat > .SRCINFO << EOF
         pkgbase = rivalcfg-tray
-        	pkgdesc = A GTK-based GUI for Rivalcfg tray indicator
-        	pkgver = $VERSION
-        	pkgrel = 1
-        	url = https://github.com/ChadAPSheridan/RivalCfgGuiGTK
-        	arch = x86_64
-        	license = GPL
-        	makedepends = cargo
-        	makedepends = rust
-        	depends = gtk3
-        	depends = libayatana-appindicator
-        	depends = hidapi
-        	depends = rivalcfg
-        	depends = librsvg
-        	source = rivalcfg-tray-$VERSION.tar.gz::https://github.com/ChadAPSheridan/RivalCfgGuiGTK/archive/refs/tags/v$VERSION.tar.gz
-        	sha256sums = ${{ steps.tarball.outputs.SHA256SUM }}
+            pkgdesc = A GTK-based GUI for Rivalcfg tray indicator
+            pkgver = $VERSION
+            pkgrel = 1
+            url = https://github.com/ChadAPSheridan/RivalCfgGuiGTK
+            arch = x86_64
+            license = GPL
+            makedepends = cargo
+            makedepends = rust
+            depends = gtk3
+            depends = libayatana-appindicator
+            depends = hidapi
+            depends = rivalcfg
+            depends = librsvg
+            source = https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/v$VERSION/RivalCfgGuiGTK-$VERSION.tar.gz
+            sha256sums = $RELEASE_SHA256SUM
         
         pkgname = rivalcfg-tray
         EOF
@@ -379,6 +394,8 @@ jobs:
         
         echo "AUR package prepared:"
         ls -la
+        echo "PKGBUILD content:"
+        head -20 PKGBUILD
 
     - name: Check AUR publishing prerequisites
       id: aur_check
@@ -433,7 +450,6 @@ jobs:
         echo "Copying package files..."
         # Copy package files
         cp $GITHUB_WORKSPACE/aur-package/* .
-        cp $GITHUB_WORKSPACE/aur-package/.* .
         
         echo "Files in AUR repository:"
         ls -la
@@ -458,16 +474,26 @@ jobs:
           echo "No changes to commit"
         fi
     
+    - name: Upload final PKGBUILD as asset
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.config.outputs.VERSION }}
+        files: PKGBUILD
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
     - name: Clean up
       if: always()
       run: |
         # Clean up sensitive files
         rm -f ~/.ssh/aur
         rm -rf /tmp/aur-repo
+        rm -f release-tarball.tar.gz
         
         echo "Workflow completed successfully!"
         echo "Release v${{ steps.config.outputs.VERSION }} has been created with:"
         echo "- Source tarball"
         echo "- DEB package for Debian/Ubuntu"
         echo "- RPM package for Fedora/RHEL"
+        echo "- Updated PKGBUILD with correct checksum"
         echo "- Published to AUR (if configured)"
