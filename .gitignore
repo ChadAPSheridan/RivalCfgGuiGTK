@@ -37,3 +37,10 @@ Cargo.lock
 
 # Third party dependencies
 /third_party/
+
+# Flatpak specific files
+.flatpak/
+.flatpak-builder/
+lib/*
+*.flatpak.yaml
+rivalcfg-tray.flatpak.yaml
