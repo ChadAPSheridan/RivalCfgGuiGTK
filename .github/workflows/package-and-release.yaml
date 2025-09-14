@@ -212,6 +212,9 @@ jobs:
       run: |
         VERSION="${{ steps.config.outputs.VERSION }}"
         
+        # Install RPM build dependencies
+        sudo apt-get install -y rpm-build
+        
         # Create RPM build structure
         mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
         
@@ -224,12 +227,6 @@ jobs:
         
         License:        GPLv3+
         URL:            https://github.com/ChadsAPSheridan/RivalCfgGuiGTK
-        Source0:        %{name}-%{version}.tar.gz
-        
-        BuildRequires:  cargo
-        BuildRequires:  rust
-        BuildRequires:  gtk3-devel
-        BuildRequires:  libayatana-appindicator-gtk3-devel
         
         Requires:       gtk3
         Requires:       libayatana-appindicator-gtk3
@@ -242,33 +239,23 @@ jobs:
         quick access to mouse settings directly from your system tray.
         
         %prep
-        %setup -q
+        # No prep needed - using pre-built binary
         
         %build
-        cargo build --release --locked
+        # No build needed - using pre-built binary
         
         %install
         rm -rf \$RPM_BUILD_ROOT
         
-        # Install binary
-        install -Dm755 target/release/rivalcfg-tray \$RPM_BUILD_ROOT%{_bindir}/rivalcfg-tray
+        # Create directory structure
+        mkdir -p \$RPM_BUILD_ROOT%{_bindir}
+        mkdir -p \$RPM_BUILD_ROOT%{_datadir}/applications
+        mkdir -p \$RPM_BUILD_ROOT%{_metainfodir}
+        mkdir -p \$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/256x256/apps
+        mkdir -p \$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/scalable/apps
         
-        # Install desktop file and appdata
-        install -Dm644 rivalcfg-tray.desktop \$RPM_BUILD_ROOT%{_datadir}/applications/rivalcfg-tray.desktop
-        install -Dm644 io.github.chadapsheridan.rivalcfgtray.appdata.xml \$RPM_BUILD_ROOT%{_metainfodir}/io.github.chadapsheridan.rivalcfgtray.appdata.xml
-        
-        # Install icons
-        install -Dm644 icons/app_icon.png \$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/256x256/apps/rivalcfg-tray.png
-        install -Dm644 icons/app_icon.png \$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/256x256/apps/io.github.chadapsheridan.rivalcfgtray.png
-        
-        for svg in icons/*.svg; do
-            base=\$(basename "\$svg")
-            size=\$(echo "\$base" | sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p')
-            if [ -n "\$size" ]; then
-                install -Dm644 "\$svg" "\$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/\${size}x\${size}/apps/\${base}"
-            fi
-            install -Dm644 "\$svg" "\$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/scalable/apps/\${base}"
-        done
+        # Copy files from the pkg directory
+        cp -r $GITHUB_WORKSPACE/pkg/* \$RPM_BUILD_ROOT/
         
         %post
         /bin/touch --no-create %{_datadir}/icons/hicolor &>/dev/null || :
@@ -293,9 +280,6 @@ jobs:
         - Release $VERSION
         
         EOF
-        
-        # Copy source to SOURCES
-        cp ${{ steps.tarball.outputs.TARBALL_NAME }}.tar.gz ~/rpmbuild/SOURCES/rivalcfg-tray-$VERSION.tar.gz
         
         # Build RPM
         rpmbuild -ba ~/rpmbuild/SPECS/rivalcfg-tray.spec
