@@ -419,7 +419,7 @@ jobs:
         echo "Attempting to clone or create AUR repository..."
         # Clone or create AUR repository
         cd /tmp
-        if $GIT_SSH_COMMAND git clone ssh://aur@aur.archlinux.org/rivalcfg-tray.git aur-repo; then
+        if git clone ssh://aur@aur.archlinux.org/rivalcfg-tray.git aur-repo; then
           echo "Successfully cloned existing AUR repository"
           cd aur-repo
         else
@@ -439,7 +439,7 @@ jobs:
         git add .
         if git commit -m "Update to version $VERSION"; then
           echo "Changes committed, pushing to AUR..."
-          $GIT_SSH_COMMAND git push origin master
+          git push origin master
           echo "Successfully published to AUR!"
         else
           echo "No changes to commit"
