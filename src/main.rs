@@ -140,13 +140,41 @@ fn get_battery_level() -> Option<(u8, bool)> {
 }
 
 fn get_battery_status(stdout: &str) -> Option<bool> {
-    if stdout.contains("Charging") {
-        Some(true)
-    } else if stdout.contains("Discharging") {
+    if stdout.contains("Discharging") {
         Some(false)
+    } else if stdout.contains("Charging") {
+        Some(true)
     } else {
         None
     }
+}
+
+fn get_mouse_name() -> Option<String> {
+    let output = Command::new("rivalcfg")
+        .arg("--help")
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        eprintln!("[rivalcfg-tray] rivalcfg command failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr));
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Find the line ending with "Options:"
+    let options_line = stdout.lines().find(|line| line.ends_with("Options:"));
+    if options_line.is_none() {
+        eprintln!("[rivalcfg-tray] Warning: Could not find 'Options:' line in rivalcfg output");
+        return None;
+    }
+    eprintln!("[rivalcfg-tray] Found 'Options:' line in rivalcfg output: {}", options_line.unwrap());
+    // Extract mouse name from the output (trim "Options:" from the end of the line.)
+    let mouse_name = options_line.unwrap().trim_end_matches("Options:").trim().to_string();
+    eprintln!("[rivalcfg-tray] rivalcfg Mouse: {}", mouse_name);
+
+    Some(mouse_name)
 }
 
 fn find_icon(name: &str) -> Option<PathBuf> {
@@ -257,7 +285,11 @@ fn main() -> anyhow::Result<()> {
 
     // Create AppIndicator
     let (level, charging) = get_battery_level().unwrap_or((0, false));
-
+    let mouse_name = get_mouse_name().unwrap_or_else(|| "SteelSeries Mouse".to_string());
+    eprintln!(
+        "[rivalcfg-tray] Starting tray for device: {} with battery level: {}%, charging: {}",
+        mouse_name, level, charging
+    );
     // Create menu
     let menu = gtk::Menu::new();
     let percent_item = gtk::MenuItem::with_label(&format!("Battery: {}%", level));
@@ -271,6 +303,7 @@ fn main() -> anyhow::Result<()> {
     status_item.set_sensitive(false);
     menu.append(&status_item);
 
+    let mouse_name = mouse_name.clone();
     let config_item = gtk::MenuItem::with_label("Config");
     menu.append(&config_item);
 
@@ -291,7 +324,7 @@ fn main() -> anyhow::Result<()> {
     generate_tray_icon(&indicator);
 
     // Config window logic
-    config_item.connect_activate(|_| {
+    config_item.connect_activate(move |_| {
         use gtk::prelude::*;
         use gtk::{
             Box as GtkBox, Button, ButtonsType, ComboBoxText, DialogFlags, Entry, Label,
@@ -485,26 +518,15 @@ fn main() -> anyhow::Result<()> {
         });
 
         // Show devices button logic
+        let mouse_name_clone = mouse_name.clone();
         show_btn.connect_clicked(move |_| {
-            let result = std::process::Command::new("rivalcfg")
-                .arg("--list-devices")
-                .output();
-            let msg = if let Ok(out) = result {
-                let output = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if output.is_empty() {
-                    "No compatible devices found.".to_string()
-                } else {
-                    output
-                }
-            } else {
-                "Error running rivalcfg CLI.".to_string()
-            };
+            
             let dialog = MessageDialog::new(
                 Some(&*win_show),
                 DialogFlags::MODAL,
                 MessageType::Info,
                 ButtonsType::Ok,
-                &msg,
+                &mouse_name_clone,
             );
             dialog.run();
             unsafe {
