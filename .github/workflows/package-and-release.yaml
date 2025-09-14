@@ -366,7 +366,7 @@ jobs:
         	makedepends = cargo
         	makedepends = rust
         	depends = gtk3
-        	depends = libayatana-appindicator3
+        	depends = libayatana-appindicator
         	depends = hidapi
         	depends = rivalcfg
         	depends = librsvg
@@ -433,6 +433,18 @@ jobs:
         echo "Copying package files..."
         # Copy package files
         cp $GITHUB_WORKSPACE/aur-package/* .
+        
+        echo "Files in AUR repository:"
+        ls -la
+        echo "Checking if .SRCINFO exists:"
+        if [ -f .SRCINFO ]; then
+          echo ".SRCINFO file found:"
+          cat .SRCINFO
+        else
+          echo "ERROR: .SRCINFO file not found!"
+          echo "Files in aur-package directory:"
+          ls -la $GITHUB_WORKSPACE/aur-package/
+        fi
         
         echo "Committing and pushing changes..."
         # Commit and push
