@@ -179,18 +179,27 @@ fn get_mouse_name() -> Option<String> {
 
 fn find_icon(name: &str) -> Option<PathBuf> {
     let mut possible_paths = vec![
-        // Current directory
+        // Standard freedesktop.org icon theme directories (where PKGBUILD installs icons)
+        PathBuf::from(format!("/usr/share/icons/hicolor/scalable/apps/{}", name)),
+        PathBuf::from(format!("/usr/share/icons/hicolor/symbolic/apps/{}", name)),
+        // Check size-specific directories (16x16, 22x22, 24x24, 32x32, 48x48, 64x64, 128x128, 256x256)
+        PathBuf::from(format!("/usr/share/icons/hicolor/16x16/apps/{}", name)),
+        PathBuf::from(format!("/usr/share/icons/hicolor/22x22/apps/{}", name)),
+        PathBuf::from(format!("/usr/share/icons/hicolor/24x24/apps/{}", name)),
+        PathBuf::from(format!("/usr/share/icons/hicolor/32x32/apps/{}", name)),
+        PathBuf::from(format!("/usr/share/icons/hicolor/48x48/apps/{}", name)),
+        PathBuf::from(format!("/usr/share/icons/hicolor/64x64/apps/{}", name)),
+        PathBuf::from(format!("/usr/share/icons/hicolor/128x128/apps/{}", name)),
+        PathBuf::from(format!("/usr/share/icons/hicolor/256x256/apps/{}", name)),
+        // Current directory (for development/testing)
         PathBuf::from(format!("icons/{}", name)),
         // Executable directory relative
         PathBuf::from(format!("bin/icons/{}", name)),
-        // Executable directory absolute
-        std::env::current_exe().ok().and_then(|path| {
-            path.parent().map(|dir| dir.join("icons").join(name))
-        })?,
         // Flatpak directories
         PathBuf::from(format!("/app/bin/icons/{}", name)),
         PathBuf::from(format!("/app/share/icons/rivalcfgtray/{}", name)),
-        // System-wide installation
+        PathBuf::from(format!("/app/share/icons/hicolor/scalable/apps/{}", name)),
+        // System-wide installation (legacy path)
         PathBuf::from(format!("/usr/share/rivalcfgtray/icons/{}", name)),
     ];
     
