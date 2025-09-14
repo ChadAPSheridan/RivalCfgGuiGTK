@@ -331,21 +331,13 @@ jobs:
     - name: Update PKGBUILD with correct checksum for release tarball
       run: |
         VERSION="${{ steps.config.outputs.VERSION }}"
-        
-        # Download the tarball from the release to get the actual checksum
-        sleep 10  # Give GitHub a moment to process the release
-        
-        # Download the release tarball
-        wget "https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/v${VERSION}/RivalCfgGuiGTK-${VERSION}.tar.gz" -O "release-tarball.tar.gz"
-        
-        # Calculate checksum of the actual release tarball
-        RELEASE_SHA256SUM=$(sha256sum release-tarball.tar.gz | cut -d' ' -f1)
+        SHA256SUM="${{ steps.tarball.outputs.SHA256SUM }}"
         
         # Update PKGBUILD with the correct source URL and checksum
         sed -i "s|source=.*|source=(\"https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/v${VERSION}/RivalCfgGuiGTK-${VERSION}.tar.gz\")|g" PKGBUILD
-        sed -i "s/{{SHA256SUM}}/$RELEASE_SHA256SUM/g" PKGBUILD
+        sed -i "s/{{SHA256SUM}}/$SHA256SUM/g" PKGBUILD
         
-        echo "Updated PKGBUILD with release tarball checksum: $RELEASE_SHA256SUM"
+        echo "Updated PKGBUILD with release tarball checksum: $SHA256SUM"
         echo "PKGBUILD source and checksum:"
         grep -E "(source=|sha256sums=)" PKGBUILD
     
@@ -488,7 +480,6 @@ jobs:
         # Clean up sensitive files
         rm -f ~/.ssh/aur
         rm -rf /tmp/aur-repo
-        rm -f release-tarball.tar.gz
         
         echo "Workflow completed successfully!"
         echo "Release v${{ steps.config.outputs.VERSION }} has been created with:"
