@@ -11,8 +11,8 @@ license=('GPL')
 # librsvg provides rsvg-convert used at runtime to render SVGs to PNG for the indicator
 depends=('gtk3' 'libayatana-appindicator' 'hidapi' 'rivalcfg' 'librsvg')
 makedepends=('cargo' 'rust')
-# Use GitHub tarball by tag (archived name is RivalCfgGuiGTK-<tag>)
-source=("$pkgname-$pkgver.tar.gz::https://github.com/ChadAPSheridan/RivalCfgGuiGTK/archive/refs/tags/v${pkgver}.tar.gz")
+# Use GitHub release tarball (uploaded by the workflow)
+source=("$pkgname-$pkgver.tar.gz::https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/v${pkgver}/RivalCfgGuiGTK-${pkgver}.tar.gz")
 sha256sums=({{SHA256SUM}})  # Replace with the actual checksum
 
 build() {
