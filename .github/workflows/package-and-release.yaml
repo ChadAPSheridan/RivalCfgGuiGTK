@@ -226,7 +226,7 @@ jobs:
         Summary:        System tray application for SteelSeries mouse configuration
         
         License:        GPLv3+
-        URL:            https://github.com/ChadsAPSheridan/RivalCfgGuiGTK
+        URL:            https://github.com/ChadAPSheridan/RivalCfgGuiGTK
         
         Requires:       gtk3
         Requires:       libayatana-appindicator-gtk3
@@ -326,7 +326,7 @@ jobs:
           - GTK-based interface with Wayland compatibility
           - Real-time battery level display with charging status
           
-          For detailed installation instructions and troubleshooting, see the [README](https://github.com/ChadsAPSheridan/RivalCfgGuiGTK/blob/main/README.md).
+          For detailed installation instructions and troubleshooting, see the [README](https://github.com/ChadAPSheridan/RivalCfgGuiGTK/blob/main/README.md).
         draft: false
         prerelease: false
         files: |
@@ -360,7 +360,7 @@ jobs:
         	pkgdesc = A GTK-based GUI for Rivalcfg tray indicator
         	pkgver = $VERSION
         	pkgrel = 1
-        	url = https://github.com/ChadsAPSheridan/RivalCfgGuiGTK
+        	url = https://github.com/ChadAPSheridan/RivalCfgGuiGTK
         	arch = x86_64
         	license = GPL
         	makedepends = cargo
@@ -370,7 +370,7 @@ jobs:
         	depends = hidapi
         	depends = rivalcfg
         	depends = librsvg
-        	source = rivalcfg-tray-$VERSION.tar.gz::https://github.com/ChadsAPSheridan/RivalCfgGuiGTK/archive/refs/tags/v$VERSION.tar.gz
+        	source = rivalcfg-tray-$VERSION.tar.gz::https://github.com/ChadAPSheridan/RivalCfgGuiGTK/archive/refs/tags/v$VERSION.tar.gz
         	sha256sums = ${{ steps.tarball.outputs.SHA256SUM }}
         
         pkgname = rivalcfg-tray
