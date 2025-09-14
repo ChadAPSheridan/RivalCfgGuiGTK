@@ -16,6 +16,9 @@ env:
 jobs:
   package-and-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
     
     steps:
     - name: Checkout repository
@@ -287,14 +290,11 @@ jobs:
         echo "Built RPM package:"
         ls -la *.rpm
     
-    - name: Create GitHub Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Create GitHub Release and Upload Assets
+      uses: softprops/action-gh-release@v1
       with:
         tag_name: v${{ steps.config.outputs.VERSION }}
-        release_name: Release v${{ steps.config.outputs.VERSION }}
+        name: Release v${{ steps.config.outputs.VERSION }}
         body: |
           ## RivalCfg Tray v${{ steps.config.outputs.VERSION }}
           
@@ -329,24 +329,13 @@ jobs:
           For detailed installation instructions and troubleshooting, see the [README](https://github.com/ChadsAPSheridan/RivalCfgGuiGTK/blob/main/README.md).
         draft: false
         prerelease: false
-    
-    - name: Upload Release Assets
-      run: |
-        VERSION="${{ steps.config.outputs.VERSION }}"
-        
-        # Upload source tarball
-        gh release upload v$VERSION ${{ steps.tarball.outputs.TARBALL_NAME }}.tar.gz
-        
-        # Upload DEB package
-        gh release upload v$VERSION rivalcfg-tray_${VERSION}_amd64.deb
-        
-        # Upload RPM package
-        gh release upload v$VERSION rivalcfg-tray-${VERSION}-1.*.rpm
-        
-        # Upload updated PKGBUILD for AUR
-        gh release upload v$VERSION PKGBUILD
+        files: |
+          ${{ steps.tarball.outputs.TARBALL_NAME }}.tar.gz
+          rivalcfg-tray_${{ steps.config.outputs.VERSION }}_amd64.deb
+          rivalcfg-tray-${{ steps.config.outputs.VERSION }}-1.*.rpm
+          PKGBUILD
       env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Prepare AUR package
       run: |
