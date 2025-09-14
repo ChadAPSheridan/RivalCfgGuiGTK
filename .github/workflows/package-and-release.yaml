@@ -245,32 +245,32 @@ jobs:
         rm -rf \$RPM_BUILD_ROOT
         
         # Create directory structure
-        mkdir -p \$RPM_BUILD_ROOT%{_bindir}
-        mkdir -p \$RPM_BUILD_ROOT%{_datadir}/applications
-        mkdir -p \$RPM_BUILD_ROOT%{_metainfodir}
-        mkdir -p \$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/256x256/apps
-        mkdir -p \$RPM_BUILD_ROOT%{_datadir}/icons/hicolor/scalable/apps
+        mkdir -p \$RPM_BUILD_ROOT/usr/bin
+        mkdir -p \$RPM_BUILD_ROOT/usr/share/applications
+        mkdir -p \$RPM_BUILD_ROOT/usr/share/metainfo
+        mkdir -p \$RPM_BUILD_ROOT/usr/share/icons/hicolor/256x256/apps
+        mkdir -p \$RPM_BUILD_ROOT/usr/share/icons/hicolor/scalable/apps
         
         # Copy files from the pkg directory
         cp -r $GITHUB_WORKSPACE/pkg/* \$RPM_BUILD_ROOT/
         
         %post
-        /bin/touch --no-create %{_datadir}/icons/hicolor &>/dev/null || :
+        /bin/touch --no-create /usr/share/icons/hicolor &>/dev/null || :
         
         %postun
         if [ \$1 -eq 0 ] ; then
-            /bin/touch --no-create %{_datadir}/icons/hicolor &>/dev/null
-            /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
+            /bin/touch --no-create /usr/share/icons/hicolor &>/dev/null
+            /usr/bin/gtk-update-icon-cache /usr/share/icons/hicolor &>/dev/null || :
         fi
         
         %posttrans
-        /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
+        /usr/bin/gtk-update-icon-cache /usr/share/icons/hicolor &>/dev/null || :
         
         %files
-        %{_bindir}/rivalcfg-tray
-        %{_datadir}/applications/rivalcfg-tray.desktop
-        %{_metainfodir}/io.github.chadapsheridan.rivalcfgtray.appdata.xml
-        %{_datadir}/icons/hicolor/*/apps/*
+        /usr/bin/rivalcfg-tray
+        /usr/share/applications/rivalcfg-tray.desktop
+        /usr/share/metainfo/io.github.chadapsheridan.rivalcfgtray.appdata.xml
+        /usr/share/icons/hicolor/*/apps/*
         
         %changelog
         * $(date +'%a %b %d %Y') Chad Sheridan <chad.sheridan@cysec.ca> - $VERSION-1
