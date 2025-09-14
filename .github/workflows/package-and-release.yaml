@@ -379,15 +379,28 @@ jobs:
         
         echo "AUR package prepared:"
         ls -la
+
+    - name: Check AUR publishing prerequisites
+      id: aur_check
+      run: |
+        if [ -z "${{ secrets.AUR_SSH_KEY }}" ]; then
+          echo "AUR_SSH_KEY secret not set. Skipping AUR publishing."
+          echo "To enable AUR publishing, add your AUR SSH private key to repository secrets."
+          echo "aur_publish_enabled=false" >> $GITHUB_OUTPUT
+        else
+          echo "AUR_SSH_KEY found. AUR publishing will be attempted."
+          echo "aur_publish_enabled=true" >> $GITHUB_OUTPUT
+        fi
     
     - name: Publish to AUR
-      if: ${{ env.AUR_SSH_KEY != '' }}
+      if: steps.aur_check.outputs.aur_publish_enabled == 'true'
       env:
         AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-        GIT_SSH_COMMAND: ssh -i ~/.ssh/aur
       run: |
+        set -e  # Exit on any error
         VERSION="${{ steps.config.outputs.VERSION }}"
         
+        echo "Setting up SSH for AUR..."
         # Set up SSH for AUR
         mkdir -p ~/.ssh
         echo "$AUR_SSH_KEY" > ~/.ssh/aur
@@ -400,31 +413,37 @@ jobs:
         git config --global user.name "GitHub Actions"
         git config --global user.email "actions@github.com"
         
-        # Clone AUR repository
+        # Set up SSH command for git
+        export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o StrictHostKeyChecking=no"
+        
+        echo "Attempting to clone or create AUR repository..."
+        # Clone or create AUR repository
         cd /tmp
-        GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git clone ssh://aur@aur.archlinux.org/rivalcfg-tray.git aur-repo || {
+        if $GIT_SSH_COMMAND git clone ssh://aur@aur.archlinux.org/rivalcfg-tray.git aur-repo; then
+          echo "Successfully cloned existing AUR repository"
+          cd aur-repo
+        else
           echo "AUR repository not found, creating new package..."
-          mkdir aur-repo
+          mkdir -p aur-repo
           cd aur-repo
           git init
           git remote add origin ssh://aur@aur.archlinux.org/rivalcfg-tray.git
-        }
+        fi
         
-        cd aur-repo
-        
+        echo "Copying package files..."
         # Copy package files
         cp $GITHUB_WORKSPACE/aur-package/* .
         
+        echo "Committing and pushing changes..."
         # Commit and push
         git add .
-        git commit -m "Update to version $VERSION" || {
+        if git commit -m "Update to version $VERSION"; then
+          echo "Changes committed, pushing to AUR..."
+          $GIT_SSH_COMMAND git push origin master
+          echo "Successfully published to AUR!"
+        else
           echo "No changes to commit"
-          exit 0
-        }
-        
-        GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git push origin master
-        
-        echo "Successfully published to AUR!"
+        fi
     
     - name: Clean up
       if: always()
