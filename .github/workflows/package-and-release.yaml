@@ -179,12 +179,16 @@ jobs:
         Section: utils
         Priority: optional
         Architecture: amd64
-        Depends: libgtk-3-0, libayatana-appindicator3-1, librsvg2-bin, rivalcfg
+        Depends: libgtk-3-0, libayatana-appindicator3-1, librsvg2-bin, python3-pip
+        Recommends: python3-rivalcfg
         Maintainer: Chad Sheridan <chad.sheridan@cysec.ca>
         Description: System tray application for SteelSeries mouse configuration
          RivalCfg Tray is a system tray application that provides easy access to 
          SteelSeries mouse configuration. It displays battery status and allows 
          quick access to mouse settings directly from your system tray.
+         .
+         Note: rivalcfg must be installed separately via pip3 if not available
+         as a system package. Run: sudo pip3 install rivalcfg
         EOF
         
         # Create postinst script to update icon cache
@@ -300,10 +304,28 @@ jobs:
           ```
           
           **Debian/Ubuntu:**
-          Download and install the `.deb` package from the assets below.
-          
+         
+          Install dependencies first:
+          ```bash
+          sudo apt install libgtk-3-0 libayatana-appindicator3-1 librsvg2-bin python3-pip
+          sudo pip3 install rivalcfg
+          ```
+          Download the `.deb` package from the assets below, then install with dependency resolution:
+          ```bash
+          sudo apt install ./rivalcfg-tray_${{ steps.config.outputs.VERSION }}_amd64.deb
+          ```
+
           **Fedora/RHEL:**
-          Download and install the `.rpm` package from the assets below.
+          Install dependencies first:
+          ```bash
+          sudo dnf install gtk3 libayatana-appindicator-gtk3 librsvg2-tools python3-pip
+          sudo pip3 install rivalcfg
+          ```
+
+          Download the `.rpm` package from the assets below, then install with dependency resolution:
+          ```bash
+          sudo dnf install ./rivalcfg-tray-${{ steps.config.outputs.VERSION }}-1.*.rpm
+          ```
           
           **From Source:**
           Download the source tarball and build with cargo.
@@ -318,7 +340,7 @@ jobs:
           - GTK-based interface with Wayland compatibility
           - Real-time battery level display with charging status
           
-          For detailed installation instructions and troubleshooting, see the [README](https://github.com/ChadAPSheridan/RivalCfgGuiGTK/blob/main/README.md).
+          For detailed installation instructions and troubleshooting, see the [README](https://github.com/ChadAPSheridan/RivalCfgGuiGTK/main/README.md).
         draft: false
         prerelease: false
         files: |
