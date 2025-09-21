@@ -1,7 +1,51 @@
 use std::env;
+use std::collections::HashMap;
+use std::sync::{Mutex, LazyLock};
+use std::time::SystemTime;
+
+// Global cache for PNG conversions
+static PNG_CACHE: LazyLock<Mutex<HashMap<String, (String, SystemTime)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+// Track last known battery state to avoid unnecessary updates
+static LAST_BATTERY_STATE: LazyLock<Mutex<Option<(u8, bool)>>> = LazyLock::new(|| Mutex::new(None));
+
+// Function to cleanup temp files
+fn cleanup_temp_files() {
+    if let Ok(mut cache) = PNG_CACHE.lock() {
+        let mut to_remove = Vec::new();
+        for (svg_path, (png_path, _)) in cache.iter() {
+            if !std::path::Path::new(png_path).exists() {
+                to_remove.push(svg_path.clone());
+            } else {
+                // Try to remove the temp file
+                if let Err(e) = std::fs::remove_file(png_path) {
+                    eprintln!("[rivalcfg-tray] Warning: Failed to cleanup temp file {}: {}", png_path, e);
+                } else {
+                    eprintln!("[rivalcfg-tray] Cleaned up temp file: {}", png_path);
+                    to_remove.push(svg_path.clone());
+                }
+            }
+        }
+        for key in to_remove {
+            cache.remove(&key);
+        }
+    }
+}
 
 fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
     let (level, charging) = get_battery_level().unwrap_or((0, false));
+    
+    // Check if battery state has changed
+    if let Ok(mut last_state) = LAST_BATTERY_STATE.lock() {
+        if let Some((last_level, last_charging)) = *last_state {
+            if last_level == level && last_charging == charging {
+                eprintln!("[rivalcfg-tray] Battery state unchanged ({}%, charging: {}), skipping icon update", level, charging);
+                return Some((level, charging));
+            }
+        }
+        *last_state = Some((level, charging));
+    }
+    
     let icon_path = if charging {
         let charging_svg = find_icon("charging.svg")
             .unwrap_or_else(|| PathBuf::from("icons/charging.svg"));
@@ -10,16 +54,21 @@ fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
     } else {
         battery_icon_path(level)
     };
-    // Retry up to 5 times with 200ms delay if conversion fails
+    // Retry up to 5 times with exponential backoff if conversion fails
     let mut tries = 0;
     let png_path = loop {
         match svg_to_png_temp(&icon_path) {
             Some(p) => break Some(p),
             None if tries < 5 => {
                 tries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                let delay_ms = 100_u64 << tries; // Exponential backoff: 200ms, 400ms, 800ms, 1600ms, 3200ms
+                eprintln!("[rivalcfg-tray] SVG conversion failed (attempt {}), retrying in {}ms", tries, delay_ms);
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             }
-            None => break None,
+            None => {
+                eprintln!("[rivalcfg-tray] Failed to convert SVG after {} attempts, giving up", tries + 1);
+                break None;
+            }
         }
     };
     if let Some(png_path) = png_path {
@@ -41,6 +90,20 @@ fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
 // use std::io::Stdout;
 fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     use std::process::Command;
+
+    // Check cache first
+    let svg_path_str = svg_path.to_string_lossy().to_string();
+    let svg_modified = std::fs::metadata(svg_path).ok()?.modified().ok()?;
+    
+    if let Ok(cache) = PNG_CACHE.lock() {
+        if let Some((cached_png_path, cached_time)) = cache.get(&svg_path_str) {
+            // Check if cached version is still valid (file exists and SVG hasn't been modified)
+            if std::path::Path::new(cached_png_path).exists() && *cached_time >= svg_modified {
+                eprintln!("[rivalcfg-tray] Using cached PNG: {}", cached_png_path);
+                return Some(cached_png_path.clone());
+            }
+        }
+    }
 
     // Create a temp file with a unique name
     let temp_file = match tempfile::Builder::new()
@@ -88,21 +151,14 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     // Keep the temp file around by leaking it
     std::mem::forget(temp_file);
     
-    Command::new("rsvg-convert")
-        .arg("64")
-        .arg("-o")
-        .arg(&temp_path)
-        .arg(svg_path)
-        .output()
-        .ok()?;
-
-    if !temp_path.exists() {
-        eprintln!("[rivalcfg-tray] PNG file was not created: {}", temp_path.display());
-        return None;
+    let png_path_str = temp_path.to_str()?.to_string();
+    
+    // Update cache
+    if let Ok(mut cache) = PNG_CACHE.lock() {
+        cache.insert(svg_path_str, (png_path_str.clone(), svg_modified));
     }
-
-    eprintln!("[rivalcfg-tray] Successfully created PNG: {}", temp_path.display());
-    Some(temp_path.to_str()?.to_string())
+    
+    Some(png_path_str)
 }
 use appindicator3::prelude::*;
 use appindicator3::{Indicator, IndicatorCategory, IndicatorStatus};
@@ -558,6 +614,15 @@ fn main() -> anyhow::Result<()> {
         ControlFlow::Continue
     });
 
+    // Cleanup temp files every 10 minutes
+    glib::timeout_add_local(Duration::from_secs(600), move || {
+        cleanup_temp_files();
+        ControlFlow::Continue
+    });
+
     gtk::main();
+    
+    // Cleanup temp files on exit
+    cleanup_temp_files();
     Ok(())
 }
