@@ -187,8 +187,8 @@ jobs:
          SteelSeries mouse configuration. It displays battery status and allows 
          quick access to mouse settings directly from your system tray.
          .
-         Note: rivalcfg must be installed separately via pip3 if not available
-         as a system package. Run: sudo pip3 install rivalcfg
+         Note: rivalcfg must be installed separately via pipx if not available
+         as a system package. Run: sudo pipx install rivalcfg
         EOF
         
         # Create postinst script to update icon cache
@@ -307,8 +307,8 @@ jobs:
          
           Install dependencies first:
           ```bash
-          sudo apt install libgtk-3-0 libayatana-appindicator3-1 librsvg2-bin python3-pip
-          sudo pip3 install rivalcfg
+          sudo apt install libgtk-3-0 libayatana-appindicator3-1 librsvg2-bin python3-pip pipx
+          sudo pipx install rivalcfg
           ```
           Download the `.deb` package from the assets below, then install with dependency resolution:
           ```bash
