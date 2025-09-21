@@ -29,8 +29,8 @@ paru -S rivalcfg-tray
 
 Install dependencies first:
 ```bash
-sudo apt install libgtk-3-0 libayatana-appindicator3-1 librsvg2-bin python3-pip
-sudo pip3 install rivalcfg
+sudo apt install libgtk-3-0 libayatana-appindicator3-1 librsvg2-bin python3-pip pipx
+sudo pipx install rivalcfg
 ```
 Download the `.deb` package from the assets below, then install with dependency resolution:
 ```bash
