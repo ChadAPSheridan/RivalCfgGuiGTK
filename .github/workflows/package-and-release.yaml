@@ -362,6 +362,10 @@ jobs:
         echo "Updated PKGBUILD with release tarball checksum: $SHA256SUM"
         echo "PKGBUILD source and checksum:"
         grep -E "(source=|sha256sums=)" PKGBUILD
+        
+        # Verify that the version was properly updated in PKGBUILD
+        echo "PKGBUILD version line:"
+        grep "pkgver=" PKGBUILD
     
     - name: Prepare AUR package
       run: |
@@ -380,36 +384,47 @@ jobs:
         if command -v makepkg >/dev/null 2>&1; then
           makepkg --printsrcinfo > .SRCINFO
         else
-          # Get the actual checksum from the updated PKGBUILD
+          # Get version, checksum and other info from the updated PKGBUILD
+          PKGBUILD_VERSION=$(grep "^pkgver=" PKGBUILD | cut -d'=' -f2)
+          PKGBUILD_REL=$(grep "^pkgrel=" PKGBUILD | cut -d'=' -f2)
           RELEASE_SHA256SUM=$(grep sha256sums PKGBUILD | sed 's/.*(\|).*//g' | tr -d "'\"")
           
-          # Fallback: create basic .SRCINFO manually
-          cat > .SRCINFO << EOF
+          echo "Extracted from PKGBUILD: version=$PKGBUILD_VERSION, release=$PKGBUILD_REL, checksum=$RELEASE_SHA256SUM"
+          
+          # Fallback: create basic .SRCINFO manually using actual PKGBUILD values
+          cat > .SRCINFO << 'SRCINFO_EOF'
         pkgbase = rivalcfg-tray
-            pkgdesc = A GTK-based GUI for Rivalcfg tray indicator
-            pkgver = $VERSION
-            pkgrel = 1
-            url = https://github.com/ChadAPSheridan/RivalCfgGuiGTK
-            arch = x86_64
-            license = GPL
-            makedepends = cargo
-            makedepends = rust
-            depends = gtk3
-            depends = libayatana-appindicator
-            depends = hidapi
-            depends = rivalcfg
-            depends = librsvg
-            source = https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/v$VERSION/RivalCfgGuiGTK-$VERSION.tar.gz
-            sha256sums = $RELEASE_SHA256SUM
+        	pkgdesc = A GTK-based GUI for Rivalcfg tray indicator
+        	pkgver = PLACEHOLDER_VERSION
+        	pkgrel = PLACEHOLDER_REL
+        	url = https://github.com/ChadAPSheridan/RivalCfgGuiGTK
+        	arch = x86_64
+        	license = GPL
+        	makedepends = cargo
+        	makedepends = rust
+        	depends = gtk3
+        	depends = libayatana-appindicator
+        	depends = hidapi
+        	depends = rivalcfg
+        	depends = librsvg
+        	source = https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/vPLACEHOLDER_VERSION/RivalCfgGuiGTK-PLACEHOLDER_VERSION.tar.gz
+        	sha256sums = PLACEHOLDER_CHECKSUM
         
         pkgname = rivalcfg-tray
-        EOF
+        SRCINFO_EOF
+          
+          # Now substitute the actual values
+          sed -i "s/PLACEHOLDER_VERSION/$PKGBUILD_VERSION/g" .SRCINFO
+          sed -i "s/PLACEHOLDER_REL/$PKGBUILD_REL/g" .SRCINFO
+          sed -i "s/PLACEHOLDER_CHECKSUM/$RELEASE_SHA256SUM/g" .SRCINFO
         fi
         
         echo "AUR package prepared:"
         ls -la
         echo "PKGBUILD content:"
         head -20 PKGBUILD
+        echo ".SRCINFO content:"
+        cat .SRCINFO
 
     - name: Check AUR publishing prerequisites
       id: aur_check
