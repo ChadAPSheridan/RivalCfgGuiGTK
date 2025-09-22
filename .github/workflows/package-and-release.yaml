@@ -486,8 +486,11 @@ jobs:
         # Remove any existing files that might conflict
         rm -f .SRCINFO PKGBUILD *.desktop *.xml
         
-        # Copy package files
-        cp $GITHUB_WORKSPACE/aur-package/* .
+        # Copy package files (including hidden files like .SRCINFO)
+        cp $GITHUB_WORKSPACE/aur-package/.SRCINFO .
+        cp $GITHUB_WORKSPACE/aur-package/PKGBUILD .
+        cp $GITHUB_WORKSPACE/aur-package/*.desktop .
+        cp $GITHUB_WORKSPACE/aur-package/*.xml .
         
         echo "Files in AUR repository after copy:"
         ls -la
