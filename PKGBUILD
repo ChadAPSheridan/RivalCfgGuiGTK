@@ -1,4 +1,4 @@
-# Maintainer: ChadAPSheridan <your-email@example.com>
+# Maintainer: ChadAPSheridan <chad.sheridan@cysec.ca>
 
 pkgname=rivalcfg-tray
 pkgver={{VERSION}}
