@@ -477,17 +477,25 @@ jobs:
         fi
         
         echo "Copying package files..."
+        # Show what we're about to copy
+        echo "Files in aur-package directory to copy:"
+        ls -la $GITHUB_WORKSPACE/aur-package/
+        echo "Contents of new .SRCINFO:"
+        cat $GITHUB_WORKSPACE/aur-package/.SRCINFO
+        
+        # Remove any existing files that might conflict
+        rm -f .SRCINFO PKGBUILD *.desktop *.xml
+        
         # Copy package files
         cp $GITHUB_WORKSPACE/aur-package/* .
         
-        echo "Files in AUR repository:"
+        echo "Files in AUR repository after copy:"
         ls -la
-        echo "Checking if .SRCINFO exists:"
+        echo "Final .SRCINFO content in AUR repo:"
         if [ -f .SRCINFO ]; then
-          echo ".SRCINFO file found:"
           cat .SRCINFO
         else
-          echo "ERROR: .SRCINFO file not found!"
+          echo "ERROR: .SRCINFO file not found after copy!"
           echo "Files in aur-package directory:"
           ls -la $GITHUB_WORKSPACE/aur-package/
         fi
