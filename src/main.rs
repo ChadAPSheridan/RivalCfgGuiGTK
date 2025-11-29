@@ -1,13 +1,333 @@
 use std::env;
 use std::collections::HashMap;
 use std::sync::{Mutex, LazyLock};
+use std::sync::Arc;
 use std::time::SystemTime;
+
+// settings includes
+use serde::{Deserialize, Serialize};
+use serde_json;
+use dirs;
+use std::fs;
 
 // Global cache for PNG conversions
 static PNG_CACHE: LazyLock<Mutex<HashMap<String, (String, SystemTime)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // Track last known battery state to avoid unnecessary updates
 static LAST_BATTERY_STATE: LazyLock<Mutex<Option<(u8, bool)>>> = LazyLock::new(|| Mutex::new(None));
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+struct Settings {
+    sensitivity: Option<String>,
+    polling_rate: Option<String>,
+    sleep_timer: Option<String>,
+    dim_timer: Option<String>,
+    // reserved for future settings like icon colour
+    colour_switch: Option<bool>,
+}
+
+fn settings_file_path() -> Option<PathBuf> {
+    // Use XDG config directory if available, otherwise fallback to home/.config
+    let base = dirs::config_dir()?;
+    let dir = base.join("rivalcfg-tray");
+    Some(dir.join("settings.json"))
+}
+
+// Abstraction for running external commands so we can mock in tests
+#[derive(Debug, Clone)]
+pub struct CommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub success: bool,
+    pub code: Option<i32>,
+}
+
+pub trait CommandRunner: Send + Sync {
+    fn run(&self, program: &str, args: &[&str]) -> CommandOutput;
+}
+
+#[derive(Debug, Default)]
+pub struct RealCommandRunner {}
+
+impl CommandRunner for RealCommandRunner {
+    fn run(&self, program: &str, args: &[&str]) -> CommandOutput {
+        let output = std::process::Command::new(program).args(args).output();
+        match output {
+            Ok(o) => CommandOutput {
+                stdout: String::from_utf8_lossy(&o.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&o.stderr).to_string(),
+                success: o.status.success(),
+                code: o.status.code(),
+            },
+            Err(e) => CommandOutput {
+                stdout: String::new(),
+                stderr: format!("Failed to spawn {}: {}", program, e),
+                success: false,
+                code: None,
+            },
+        }
+    }
+}
+
+/// Build arguments for `rivalcfg` from Settings. Returns only the args (no program name).
+fn build_rivalcfg_args(s: &Settings) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(ref sens) = s.sensitivity {
+        if !sens.is_empty() {
+            args.push("--sensitivity".to_string());
+            args.push(sens.clone());
+        }
+    }
+    if let Some(ref rate) = s.polling_rate {
+        if !rate.is_empty() {
+            args.push("--polling-rate".to_string());
+            args.push(rate.clone());
+        }
+    }
+    if let Some(ref sleep) = s.sleep_timer {
+        if !sleep.is_empty() {
+            args.push("--sleep-timer".to_string());
+            args.push(sleep.clone());
+        }
+    }
+    if let Some(ref dim) = s.dim_timer {
+        if !dim.is_empty() {
+            args.push("--dim-timer".to_string());
+            args.push(dim.clone());
+        }
+    }
+    args
+}
+
+fn load_settings() -> Option<Settings> {
+    let path = settings_file_path()?;
+    if !path.exists() {
+        return Some(Settings::default());
+    }
+    let data = fs::read_to_string(&path).ok()?;
+    let s: Settings = serde_json::from_str(&data).ok()?;
+    Some(s)
+}
+
+fn save_settings(s: &Settings) -> Result<(), anyhow::Error> {
+    if let Some(path) = settings_file_path() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let data = serde_json::to_string_pretty(s)?;
+        fs::write(&path, data)?;
+        eprintln!("[rivalcfg-tray] Saved settings to {}", path.display());
+        return Ok(());
+    }
+    Err(anyhow::anyhow!("Could not determine settings file path"))
+}
+
+// Validation helpers
+fn validate_sensitivity(s: &str) -> Result<(), String> {
+    if s.trim().is_empty() {
+        return Ok(());
+    }
+    match s.parse::<u32>() {
+        Ok(v) if v >= 100 && v <= 16000 => Ok(()),
+        _ => Err("Sensitivity must be a number between 100 and 16000".to_string()),
+    }
+}
+
+fn validate_polling_rate(s: &str) -> Result<(), String> {
+    if s.trim().is_empty() {
+        return Ok(());
+    }
+    match s {
+        "125" | "250" | "500" | "1000" => Ok(()),
+        _ => Err("Polling rate must be one of: 125, 250, 500, 1000".to_string()),
+    }
+}
+
+fn validate_timer(s: &str, name: &str) -> Result<(), String> {
+    if s.trim().is_empty() {
+        return Ok(());
+    }
+    match s.parse::<u32>() {
+        Ok(_) => Ok(()),
+        Err(_) => Err(format!("{} must be a whole number", name)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Debug, Default)]
+    struct MockCommandRunner {
+        responses: Mutex<HashMap<String, CommandOutput>>,
+        calls: Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl MockCommandRunner {
+        fn new() -> Self {
+            Self {
+                responses: Mutex::new(HashMap::new()),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn set_response(&self, program: &str, args: &[&str], out: CommandOutput) {
+            let key = format!("{}|{}", program, args.join("|"));
+            self.responses.lock().unwrap().insert(key, out);
+        }
+
+        fn get_calls(&self) -> Vec<(String, Vec<String>)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandRunner for MockCommandRunner {
+        fn run(&self, program: &str, args: &[&str]) -> CommandOutput {
+            let args_vec = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            self.calls.lock().unwrap().push((program.to_string(), args_vec.clone()));
+            let key = format!("{}|{}", program, args.join("|"));
+            if let Some(out) = self.responses.lock().unwrap().get(&key) {
+                return out.clone();
+            }
+            CommandOutput {
+                stdout: String::new(),
+                stderr: format!("No mock response for {} {:?}", program, args),
+                success: false,
+                code: None,
+            }
+        }
+    }
+
+    #[test]
+    fn test_validate_sensitivity() {
+        assert!(validate_sensitivity("").is_ok());
+        assert!(validate_sensitivity("800").is_ok());
+        assert!(validate_sensitivity("100").is_ok());
+        assert!(validate_sensitivity("16000").is_ok());
+        assert!(validate_sensitivity("99").is_err());
+        assert!(validate_sensitivity("abc").is_err());
+    }
+
+    #[test]
+    fn test_validate_polling_rate() {
+        assert!(validate_polling_rate("").is_ok());
+        assert!(validate_polling_rate("125").is_ok());
+        assert!(validate_polling_rate("250").is_ok());
+        assert!(validate_polling_rate("500").is_ok());
+        assert!(validate_polling_rate("1000").is_ok());
+        assert!(validate_polling_rate("42").is_err());
+    }
+
+    #[test]
+    fn test_validate_timer() {
+        assert!(validate_timer("", "Sleep Timer").is_ok());
+        assert!(validate_timer("10", "Sleep Timer").is_ok());
+        assert!(validate_timer("abc", "Dim Timer").is_err());
+    }
+
+    #[test]
+    fn test_settings_roundtrip() {
+        let s = Settings {
+            sensitivity: Some("800".to_string()),
+            polling_rate: Some("1000".to_string()),
+            sleep_timer: Some("15".to_string()),
+            dim_timer: Some("5".to_string()),
+            colour_switch: Some(true),
+        };
+        let json = serde_json::to_string(&s).expect("serialize");
+        let parsed: Settings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.sensitivity, s.sensitivity);
+        assert_eq!(parsed.polling_rate, s.polling_rate);
+        assert_eq!(parsed.sleep_timer, s.sleep_timer);
+        assert_eq!(parsed.dim_timer, s.dim_timer);
+        assert_eq!(parsed.colour_switch, s.colour_switch);
+    }
+
+    #[test]
+    fn test_get_battery_level_with_mock_runner_charging() {
+        let mock = MockCommandRunner::new();
+        let stdout = "SteelSeries Rival Options:\nMouse battery: 75% Charging\n".to_string();
+        mock.set_response(
+            "rivalcfg",
+            &["--battery-level"],
+            CommandOutput {
+                stdout: stdout.clone(),
+                stderr: String::new(),
+                success: true,
+                code: Some(0),
+            },
+        );
+
+        let res = get_battery_level_with_runner(&mock);
+        assert!(res.is_some());
+        let (percent, charging) = res.unwrap();
+        assert_eq!(percent, 75);
+        assert!(charging);
+    }
+
+    #[test]
+    fn test_get_battery_level_with_mock_runner_discharging() {
+        let mock = MockCommandRunner::new();
+        let stdout = "Mouse battery: 12% Discharging\n".to_string();
+        mock.set_response(
+            "rivalcfg",
+            &["--battery-level"],
+            CommandOutput {
+                stdout: stdout.clone(),
+                stderr: String::new(),
+                success: true,
+                code: Some(0),
+            },
+        );
+        let res = get_battery_level_with_runner(&mock);
+        assert!(res.is_some());
+        let (percent, charging) = res.unwrap();
+        assert_eq!(percent, 12);
+        assert!(!charging);
+    }
+
+    #[test]
+    fn test_get_mouse_name_with_mock_runner() {
+        let mock = MockCommandRunner::new();
+        let stdout = "Some header\nMyMouse Options:\n more text\n".to_string();
+        mock.set_response(
+            "rivalcfg",
+            &["--help"],
+            CommandOutput {
+                stdout: stdout.clone(),
+                stderr: String::new(),
+                success: true,
+                code: Some(0),
+            },
+        );
+        let res = get_mouse_name_with_runner(&mock);
+        assert_eq!(res.unwrap(), "MyMouse");
+    }
+
+    #[test]
+    fn test_build_rivalcfg_args_variations() {
+        let s = Settings {
+            sensitivity: Some("800".to_string()),
+            polling_rate: Some("500".to_string()),
+            sleep_timer: Some("10".to_string()),
+            dim_timer: Some("3".to_string()),
+            colour_switch: None,
+        };
+        let args = build_rivalcfg_args(&s);
+        assert_eq!(args, vec![
+            "--sensitivity".to_string(),
+            "800".to_string(),
+            "--polling-rate".to_string(),
+            "500".to_string(),
+            "--sleep-timer".to_string(),
+            "10".to_string(),
+            "--dim-timer".to_string(),
+            "3".to_string(),
+        ]);
+    }
+}
 
 // Function to cleanup temp files
 fn cleanup_temp_files() {
@@ -165,34 +485,27 @@ use appindicator3::{Indicator, IndicatorCategory, IndicatorStatus};
 use glib::ControlFlow;
 use gtk::prelude::*;
 use std::path::PathBuf;
-use std::process::Command;
+// use std::process::Command; (moved to RealCommandRunner)
 use std::time::Duration;
 
-fn get_battery_level() -> Option<(u8, bool)> {
+fn get_battery_level_with_runner(runner: &dyn CommandRunner) -> Option<(u8, bool)> {
     eprintln!("[rivalcfg-tray] Attempting to run rivalcfg --battery-level");
-    let output = Command::new("rivalcfg")
-        .arg("--battery-level")
-        .output()
-        .map_err(|e| {
-            eprintln!("[rivalcfg-tray] Failed to execute rivalcfg: {}", e);
-            e
-        })
-        .ok()?;
-
-    if !output.status.success() {
-        eprintln!("[rivalcfg-tray] rivalcfg command failed:\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr));
+    let out = runner.run("rivalcfg", &["--battery-level"]);
+    if !out.success {
+        eprintln!("[rivalcfg-tray] rivalcfg command failed:\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
         return None;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    eprintln!("[rivalcfg-tray] rivalcfg output: {}", stdout);
-    let charging_status = get_battery_status(&stdout)?;
-    let second_last_word = stdout.split_whitespace().rev().nth(1)?;
+    eprintln!("[rivalcfg-tray] rivalcfg output: {}", out.stdout);
+    let charging_status = get_battery_status(&out.stdout)?;
+    let second_last_word = out.stdout.split_whitespace().rev().nth(1)?;
     let trimmed = second_last_word.trim_end_matches('%');
     let percent = trimmed.parse::<u8>().ok()?;
-
     Some((percent, charging_status))
+}
+
+fn get_battery_level() -> Option<(u8, bool)> {
+    let runner = RealCommandRunner::default();
+    get_battery_level_with_runner(&runner)
 }
 
 fn get_battery_status(stdout: &str) -> Option<bool> {
@@ -205,20 +518,14 @@ fn get_battery_status(stdout: &str) -> Option<bool> {
     }
 }
 
-fn get_mouse_name() -> Option<String> {
-    let output = Command::new("rivalcfg")
-        .arg("--help")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        eprintln!("[rivalcfg-tray] rivalcfg command failed:\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr));
+fn get_mouse_name_with_runner(runner: &dyn CommandRunner) -> Option<String> {
+    let out = runner.run("rivalcfg", &["--help"]);
+    if !out.success {
+        eprintln!("[rivalcfg-tray] rivalcfg command failed:\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
         return None;
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = out.stdout;
     // Find the line ending with "Options:"
     let options_line = stdout.lines().find(|line| line.ends_with("Options:"));
     if options_line.is_none() {
@@ -231,6 +538,11 @@ fn get_mouse_name() -> Option<String> {
     eprintln!("[rivalcfg-tray] rivalcfg Mouse: {}", mouse_name);
 
     Some(mouse_name)
+}
+
+fn get_mouse_name() -> Option<String> {
+    let runner = RealCommandRunner::default();
+    get_mouse_name_with_runner(&runner)
 }
 
 fn find_icon(name: &str) -> Option<PathBuf> {
@@ -372,6 +684,15 @@ fn main() -> anyhow::Result<()> {
     let config_item = gtk::MenuItem::with_label("Config");
     menu.append(&config_item);
 
+    let separator = gtk::SeparatorMenuItem::new();
+    menu.append(&separator);
+
+    let colour_switch_item = gtk::MenuItem::with_label("Icon Colour Switch");
+    colour_switch_item.set_sensitive(true);
+    menu.append(&colour_switch_item);
+
+    menu.append(&separator);
+
     let quit_item = gtk::MenuItem::with_label("Quit");
     menu.append(&quit_item);
     quit_item.connect_activate(|_| {
@@ -386,9 +707,24 @@ fn main() -> anyhow::Result<()> {
         .title(&format!("Battery: {}%", level))
         .build();
 
+    // Create a shared command runner and apply any saved settings on startup
+    let runner: Arc<dyn CommandRunner> = Arc::new(RealCommandRunner::default());
+    if let Some(s) = load_settings() {
+        let args = build_rivalcfg_args(&s);
+        if !args.is_empty() {
+            eprintln!("[rivalcfg-tray] Applying saved settings on startup: {:?}", &args);
+            let slices = args.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
+            let out = runner.run("rivalcfg", &slices);
+            if !out.success {
+                eprintln!("[rivalcfg-tray] Failed to apply saved settings: {}", out.stderr);
+            }
+        }
+    }
+
     generate_tray_icon(&indicator);
 
     // Config window logic
+    let runner_for_ui = runner.clone();
     config_item.connect_activate(move |_| {
         use gtk::prelude::*;
         use gtk::{
@@ -429,6 +765,7 @@ fn main() -> anyhow::Result<()> {
         for rate in &["125", "250", "500", "1000"] {
             polling_rate_combo.append_text(rate);
         }
+        // polling_rate_combo default; we'll overwrite from saved settings below
         polling_rate_combo.set_active(Some(3));
         poll_box.pack_start(&polling_rate_combo, true, true, 0);
         vbox.pack_start(&poll_box, false, false, 0);
@@ -468,19 +805,11 @@ fn main() -> anyhow::Result<()> {
         let win_show = win.clone();
         let update_battery = {
             let battery_label = battery_label_rc.clone();
+            let runner = runner_for_ui.clone();
             move || {
-                let output = std::process::Command::new("rivalcfg")
-                    .arg("--battery-level")
-                    .output();
-                let text = if let Ok(out) = output {
-                    if out.status.success() {
-                        format!(
-                            "Battery Level: {}",
-                            String::from_utf8_lossy(&out.stdout).trim()
-                        )
-                    } else {
-                        "Battery Level: N/A".to_string()
-                    }
+                let out = runner.run("rivalcfg", &["--battery-level"]);
+                let text = if out.success {
+                    format!("Battery Level: {}", out.stdout.trim())
                 } else {
                     "Battery Level: N/A".to_string()
                 };
@@ -489,59 +818,130 @@ fn main() -> anyhow::Result<()> {
         };
         update_battery();
 
+        // Now fill UI from stored settings (after widgets are created)
+        if let Some(s) = load_settings() {
+            if let Some(ref pr) = s.polling_rate {
+                let idx = match pr.as_str() {
+                    "125" => 0,
+                    "250" => 1,
+                    "500" => 2,
+                    "1000" => 3,
+                    _ => 3,
+                };
+                polling_rate_combo.set_active(Some(idx));
+            }
+            if let Some(ref sens) = s.sensitivity {
+                sensitivity_entry.set_text(sens);
+            }
+            if let Some(ref sleep_t) = s.sleep_timer {
+                sleep_timer_entry.set_text(sleep_t);
+            }
+            if let Some(ref dim_t) = s.dim_timer {
+                dim_timer_entry.set_text(dim_t);
+            }
+        }
+
         // Apply button logic
         let battery_label_apply = battery_label_rc.clone();
+        let win_apply_clone = win_apply.clone();
+        let sensitivity_entry_apply = sensitivity_entry.clone();
+        let polling_rate_combo_apply = polling_rate_combo.clone();
+        let sleep_timer_entry_apply = sleep_timer_entry.clone();
+        let dim_timer_entry_apply = dim_timer_entry.clone();
+        let runner_apply = runner_for_ui.clone();
+
         apply_btn.connect_clicked(move |_| {
-            let mut command = vec!["rivalcfg".to_string()];
-            let sensitivity = sensitivity_entry.text().to_string();
-            if !sensitivity.is_empty() {
-                command.push("--sensitivity".to_string());
-                command.push(sensitivity);
+            let sensitivity = sensitivity_entry_apply.text().to_string();
+
+            // Validate fields before proceeding
+            if let Err(msg) = validate_sensitivity(&sensitivity) {
+                let dialog = MessageDialog::new(
+                    Some(&*win_apply_clone),
+                    DialogFlags::MODAL,
+                    MessageType::Error,
+                    ButtonsType::Ok,
+                    &msg,
+                );
+                dialog.run();
+                unsafe { dialog.destroy(); }
+                return;
             }
-            let polling_rate = polling_rate_combo.active_text().map(|s| s.to_string());
-            if let Some(rate) = polling_rate {
-                command.push("--polling-rate".to_string());
-                command.push(rate);
-            }
-            let sleep_timer = sleep_timer_entry.text().to_string();
-            if !sleep_timer.is_empty() {
-                command.push("--sleep-timer".to_string());
-                command.push(sleep_timer);
-            }
-            let dim_timer = dim_timer_entry.text().to_string();
-            if !dim_timer.is_empty() {
-                command.push("--dim-timer".to_string());
-                command.push(dim_timer);
-            }
-            // Update battery
-            let output = std::process::Command::new("rivalcfg")
-                .arg("--battery-level")
-                .output();
-            let text = if let Ok(out) = output {
-                if out.status.success() {
-                    format!(
-                        "Battery Level: {}",
-                        String::from_utf8_lossy(&out.stdout).trim()
-                    )
-                } else {
-                    "Battery Level: N/A".to_string()
+            // sensitivity will be saved in Settings and applied below via runner
+            let polling_rate = polling_rate_combo_apply.active_text().map(|s| s.to_string());
+            if let Some(ref prate) = polling_rate {
+                if let Err(msg) = validate_polling_rate(prate) {
+                    let dialog = MessageDialog::new(
+                        Some(&*win_apply_clone),
+                        DialogFlags::MODAL,
+                        MessageType::Error,
+                        ButtonsType::Ok,
+                        &msg,
+                    );
+                    dialog.run();
+                    unsafe { dialog.destroy(); }
+                    return;
                 }
+            }
+            // polling_rate will be saved in Settings and applied below via runner
+            let sleep_timer = sleep_timer_entry_apply.text().to_string();
+            if let Err(msg) = validate_timer(&sleep_timer, "Sleep Timer") {
+                let dialog = MessageDialog::new(
+                    Some(&*win_apply_clone),
+                    DialogFlags::MODAL,
+                    MessageType::Error,
+                    ButtonsType::Ok,
+                    &msg,
+                );
+                dialog.run();
+                unsafe { dialog.destroy(); }
+                return;
+            }
+            // sleep_timer will be saved in Settings and applied below via runner
+            let dim_timer = dim_timer_entry_apply.text().to_string();
+            if let Err(msg) = validate_timer(&dim_timer, "Dim Timer") {
+                let dialog = MessageDialog::new(
+                    Some(&*win_apply_clone),
+                    DialogFlags::MODAL,
+                    MessageType::Error,
+                    ButtonsType::Ok,
+                    &msg,
+                );
+                dialog.run();
+                unsafe { dialog.destroy(); }
+                return;
+            }
+            // dim_timer will be saved in Settings and applied below via runner
+            // Update battery using runner
+            let out = runner_apply.run("rivalcfg", &["--battery-level"]);
+            let text = if out.success {
+                format!("Battery Level: {}", out.stdout.trim())
             } else {
                 "Battery Level: N/A".to_string()
             };
             battery_label_apply.set_text(&text);
-            // Apply settings
-            if command.len() > 1 {
-                let result = std::process::Command::new(&command[0])
-                    .args(&command[1..])
-                    .output();
-                if let Err(e) = result {
+            // Save settings to disk
+            let settings = Settings {
+                sensitivity: if sensitivity.is_empty() { None } else { Some(sensitivity) },
+                polling_rate: polling_rate.clone(),
+                sleep_timer: if sleep_timer.is_empty() { None } else { Some(sleep_timer) },
+                dim_timer: if dim_timer.is_empty() { None } else { Some(dim_timer) },
+                colour_switch: None,
+            };
+            if let Err(e) = save_settings(&settings) {
+                eprintln!("[rivalcfg-tray] Failed to save settings: {}", e);
+            }
+            // Apply settings via runner
+            let args = build_rivalcfg_args(&settings);
+            if !args.is_empty() {
+                let slices = args.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
+                let out = runner_apply.run("rivalcfg", &slices);
+                if !out.success {
                     let dialog = MessageDialog::new(
-                        Some(&*win_apply),
+                        Some(&*win_apply_clone),
                         DialogFlags::MODAL,
                         MessageType::Error,
                         ButtonsType::Ok,
-                        &format!("Error running the command: {}", e),
+                        &format!("Error running the command: {}", out.stderr),
                     );
                     dialog.run();
                     unsafe {
@@ -598,6 +998,11 @@ fn main() -> anyhow::Result<()> {
                 dialog.destroy();
             }
         });
+    });
+
+    colour_switch_item.connect_activate(move |_| {
+        eprintln!("[rivalcfg-tray] Icon Colour Switch clicked - functionality not implemented yet.");
+        // Placeholder for future functionality
     });
 
     // Update icon every 30 seconds

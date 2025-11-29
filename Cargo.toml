@@ -11,6 +11,9 @@ appindicator3 = "0.3"
 gdk-pixbuf = "0.18"
 gtk = "0.18"
 tempfile = "3.21.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "4.0"
 
 # System dependency required for SVG to PNG conversion at runtime:
 #   rsvg-convert (usually provided by the librsvg2-bin package)
