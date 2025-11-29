@@ -22,8 +22,9 @@ struct Settings {
     polling_rate: Option<String>,
     sleep_timer: Option<String>,
     dim_timer: Option<String>,
-    // reserved for future settings like icon colour
-    colour_switch: Option<bool>,
+    // icon colour mode: "light", "dark", or "custom" (custom may store a hex color in custom_color)
+    colour_mode: Option<String>,
+    custom_color: Option<String>,
 }
 
 fn settings_file_path() -> Option<PathBuf> {
@@ -32,72 +33,14 @@ fn settings_file_path() -> Option<PathBuf> {
     let dir = base.join("rivalcfg-tray");
     Some(dir.join("settings.json"))
 }
-
-// Abstraction for running external commands so we can mock in tests
-#[derive(Debug, Clone)]
-pub struct CommandOutput {
-    pub stdout: String,
-    pub stderr: String,
-    pub success: bool,
-    pub code: Option<i32>,
-}
-
-pub trait CommandRunner: Send + Sync {
-    fn run(&self, program: &str, args: &[&str]) -> CommandOutput;
-}
-
-#[derive(Debug, Default)]
-pub struct RealCommandRunner {}
-
-impl CommandRunner for RealCommandRunner {
-    fn run(&self, program: &str, args: &[&str]) -> CommandOutput {
-        let output = std::process::Command::new(program).args(args).output();
-        match output {
-            Ok(o) => CommandOutput {
-                stdout: String::from_utf8_lossy(&o.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&o.stderr).to_string(),
-                success: o.status.success(),
-                code: o.status.code(),
-            },
-            Err(e) => CommandOutput {
-                stdout: String::new(),
-                stderr: format!("Failed to spawn {}: {}", program, e),
-                success: false,
-                code: None,
-            },
-        }
-    }
-}
-
-/// Build arguments for `rivalcfg` from Settings. Returns only the args (no program name).
-fn build_rivalcfg_args(s: &Settings) -> Vec<String> {
-    let mut args = Vec::new();
-    if let Some(ref sens) = s.sensitivity {
-        if !sens.is_empty() {
-            args.push("--sensitivity".to_string());
-            args.push(sens.clone());
-        }
-    }
-    if let Some(ref rate) = s.polling_rate {
-        if !rate.is_empty() {
-            args.push("--polling-rate".to_string());
-            args.push(rate.clone());
-        }
-    }
-    if let Some(ref sleep) = s.sleep_timer {
-        if !sleep.is_empty() {
-            args.push("--sleep-timer".to_string());
-            args.push(sleep.clone());
-        }
-    }
-    if let Some(ref dim) = s.dim_timer {
-        if !dim.is_empty() {
-            args.push("--dim-timer".to_string());
-            args.push(dim.clone());
-        }
-    }
-    args
-}
+mod cmd;
+use crate::cmd::{
+    CommandRunner,
+    RealCommandRunner,
+    build_rivalcfg_args,
+    get_battery_level,
+    get_mouse_name,
+};
 
 fn load_settings() -> Option<Settings> {
     let path = settings_file_path()?;
@@ -111,20 +54,18 @@ fn load_settings() -> Option<Settings> {
 
 fn save_settings(s: &Settings) -> Result<(), anyhow::Error> {
     if let Some(path) = settings_file_path() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
         }
         let data = serde_json::to_string_pretty(s)?;
         fs::write(&path, data)?;
-        eprintln!("[rivalcfg-tray] Saved settings to {}", path.display());
-        return Ok(());
     }
-    Err(anyhow::anyhow!("Could not determine settings file path"))
+    Ok(())
 }
 
-// Validation helpers
+// Validation helpers used by the config dialog and tests
 fn validate_sensitivity(s: &str) -> Result<(), String> {
-    if s.trim().is_empty() {
+    if s.is_empty() {
         return Ok(());
     }
     match s.parse::<u32>() {
@@ -134,7 +75,7 @@ fn validate_sensitivity(s: &str) -> Result<(), String> {
 }
 
 fn validate_polling_rate(s: &str) -> Result<(), String> {
-    if s.trim().is_empty() {
+    if s.is_empty() {
         return Ok(());
     }
     match s {
@@ -144,188 +85,12 @@ fn validate_polling_rate(s: &str) -> Result<(), String> {
 }
 
 fn validate_timer(s: &str, name: &str) -> Result<(), String> {
-    if s.trim().is_empty() {
+    if s.is_empty() {
         return Ok(());
     }
     match s.parse::<u32>() {
         Ok(_) => Ok(()),
-        Err(_) => Err(format!("{} must be a whole number", name)),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
-    #[derive(Debug, Default)]
-    struct MockCommandRunner {
-        responses: Mutex<HashMap<String, CommandOutput>>,
-        calls: Mutex<Vec<(String, Vec<String>)>>,
-    }
-
-    impl MockCommandRunner {
-        fn new() -> Self {
-            Self {
-                responses: Mutex::new(HashMap::new()),
-                calls: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn set_response(&self, program: &str, args: &[&str], out: CommandOutput) {
-            let key = format!("{}|{}", program, args.join("|"));
-            self.responses.lock().unwrap().insert(key, out);
-        }
-
-        fn get_calls(&self) -> Vec<(String, Vec<String>)> {
-            self.calls.lock().unwrap().clone()
-        }
-    }
-
-    impl CommandRunner for MockCommandRunner {
-        fn run(&self, program: &str, args: &[&str]) -> CommandOutput {
-            let args_vec = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-            self.calls.lock().unwrap().push((program.to_string(), args_vec.clone()));
-            let key = format!("{}|{}", program, args.join("|"));
-            if let Some(out) = self.responses.lock().unwrap().get(&key) {
-                return out.clone();
-            }
-            CommandOutput {
-                stdout: String::new(),
-                stderr: format!("No mock response for {} {:?}", program, args),
-                success: false,
-                code: None,
-            }
-        }
-    }
-
-    #[test]
-    fn test_validate_sensitivity() {
-        assert!(validate_sensitivity("").is_ok());
-        assert!(validate_sensitivity("800").is_ok());
-        assert!(validate_sensitivity("100").is_ok());
-        assert!(validate_sensitivity("16000").is_ok());
-        assert!(validate_sensitivity("99").is_err());
-        assert!(validate_sensitivity("abc").is_err());
-    }
-
-    #[test]
-    fn test_validate_polling_rate() {
-        assert!(validate_polling_rate("").is_ok());
-        assert!(validate_polling_rate("125").is_ok());
-        assert!(validate_polling_rate("250").is_ok());
-        assert!(validate_polling_rate("500").is_ok());
-        assert!(validate_polling_rate("1000").is_ok());
-        assert!(validate_polling_rate("42").is_err());
-    }
-
-    #[test]
-    fn test_validate_timer() {
-        assert!(validate_timer("", "Sleep Timer").is_ok());
-        assert!(validate_timer("10", "Sleep Timer").is_ok());
-        assert!(validate_timer("abc", "Dim Timer").is_err());
-    }
-
-    #[test]
-    fn test_settings_roundtrip() {
-        let s = Settings {
-            sensitivity: Some("800".to_string()),
-            polling_rate: Some("1000".to_string()),
-            sleep_timer: Some("15".to_string()),
-            dim_timer: Some("5".to_string()),
-            colour_switch: Some(true),
-        };
-        let json = serde_json::to_string(&s).expect("serialize");
-        let parsed: Settings = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(parsed.sensitivity, s.sensitivity);
-        assert_eq!(parsed.polling_rate, s.polling_rate);
-        assert_eq!(parsed.sleep_timer, s.sleep_timer);
-        assert_eq!(parsed.dim_timer, s.dim_timer);
-        assert_eq!(parsed.colour_switch, s.colour_switch);
-    }
-
-    #[test]
-    fn test_get_battery_level_with_mock_runner_charging() {
-        let mock = MockCommandRunner::new();
-        let stdout = "SteelSeries Rival Options:\nMouse battery: 75% Charging\n".to_string();
-        mock.set_response(
-            "rivalcfg",
-            &["--battery-level"],
-            CommandOutput {
-                stdout: stdout.clone(),
-                stderr: String::new(),
-                success: true,
-                code: Some(0),
-            },
-        );
-
-        let res = get_battery_level_with_runner(&mock);
-        assert!(res.is_some());
-        let (percent, charging) = res.unwrap();
-        assert_eq!(percent, 75);
-        assert!(charging);
-    }
-
-    #[test]
-    fn test_get_battery_level_with_mock_runner_discharging() {
-        let mock = MockCommandRunner::new();
-        let stdout = "Mouse battery: 12% Discharging\n".to_string();
-        mock.set_response(
-            "rivalcfg",
-            &["--battery-level"],
-            CommandOutput {
-                stdout: stdout.clone(),
-                stderr: String::new(),
-                success: true,
-                code: Some(0),
-            },
-        );
-        let res = get_battery_level_with_runner(&mock);
-        assert!(res.is_some());
-        let (percent, charging) = res.unwrap();
-        assert_eq!(percent, 12);
-        assert!(!charging);
-    }
-
-    #[test]
-    fn test_get_mouse_name_with_mock_runner() {
-        let mock = MockCommandRunner::new();
-        let stdout = "Some header\nMyMouse Options:\n more text\n".to_string();
-        mock.set_response(
-            "rivalcfg",
-            &["--help"],
-            CommandOutput {
-                stdout: stdout.clone(),
-                stderr: String::new(),
-                success: true,
-                code: Some(0),
-            },
-        );
-        let res = get_mouse_name_with_runner(&mock);
-        assert_eq!(res.unwrap(), "MyMouse");
-    }
-
-    #[test]
-    fn test_build_rivalcfg_args_variations() {
-        let s = Settings {
-            sensitivity: Some("800".to_string()),
-            polling_rate: Some("500".to_string()),
-            sleep_timer: Some("10".to_string()),
-            dim_timer: Some("3".to_string()),
-            colour_switch: None,
-        };
-        let args = build_rivalcfg_args(&s);
-        assert_eq!(args, vec![
-            "--sensitivity".to_string(),
-            "800".to_string(),
-            "--polling-rate".to_string(),
-            "500".to_string(),
-            "--sleep-timer".to_string(),
-            "10".to_string(),
-            "--dim-timer".to_string(),
-            "3".to_string(),
-        ]);
+        Err(_) => Err(format!("{} must be an integer value (minutes)", name)),
     }
 }
 
@@ -377,18 +142,20 @@ fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
     // Retry up to 5 times with exponential backoff if conversion fails
     let mut tries = 0;
     let png_path = loop {
-        match svg_to_png_temp(&icon_path) {
-            Some(p) => break Some(p),
-            None if tries < 5 => {
-                tries += 1;
-                let delay_ms = 100_u64 << tries; // Exponential backoff: 200ms, 400ms, 800ms, 1600ms, 3200ms
-                eprintln!("[rivalcfg-tray] SVG conversion failed (attempt {}), retrying in {}ms", tries, delay_ms);
-                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            }
-            None => {
-                eprintln!("[rivalcfg-tray] Failed to convert SVG after {} attempts, giving up", tries + 1);
-                break None;
-            }
+        if let Some(p) = svg_to_png_temp(&icon_path) {
+            break Some(p);
+        }
+
+        // No PNG produced this iteration
+        if tries < 5 {
+            tries += 1;
+            let delay_ms = 100_u64 << tries; // Exponential backoff: 200ms, 400ms, 800ms, 1600ms, 3200ms
+            eprintln!("[rivalcfg-tray] SVG conversion failed (attempt {}), retrying in {}ms", tries, delay_ms);
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            continue;
+        } else {
+            eprintln!("[rivalcfg-tray] Failed to convert SVG after {} attempts, giving up", tries + 1);
+            break None;
         }
     };
     if let Some(png_path) = png_path {
@@ -411,13 +178,18 @@ fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
 fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     use std::process::Command;
 
-    // Check cache first
+    // Check cache first and respect custom_color when present
     let svg_path_str = svg_path.to_string_lossy().to_string();
     let svg_modified = std::fs::metadata(svg_path).ok()?.modified().ok()?;
-    
+    let mut cache_key = svg_path_str.clone();
+    if let Some(s) = load_settings() {
+        if let Some(ref clr) = s.custom_color {
+            // include color in cache key
+            cache_key = format!("{}::{}", svg_path_str, clr);
+        }
+    }
     if let Ok(cache) = PNG_CACHE.lock() {
-        if let Some((cached_png_path, cached_time)) = cache.get(&svg_path_str) {
-            // Check if cached version is still valid (file exists and SVG hasn't been modified)
+        if let Some((cached_png_path, cached_time)) = cache.get(&cache_key) {
             if std::path::Path::new(cached_png_path).exists() && *cached_time >= svg_modified {
                 eprintln!("[rivalcfg-tray] Using cached PNG: {}", cached_png_path);
                 return Some(cached_png_path.clone());
@@ -438,7 +210,18 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     };
 
     let temp_path = temp_file.path().to_path_buf();
-    eprintln!("[rivalcfg-tray] Converting SVG to PNG: {} -> {}", svg_path.display(), temp_path.display());
+    // If user selected a custom color, create a recolored temporary SVG and convert that instead
+    let mut svg_to_convert = svg_path.clone();
+    if let Some(s) = load_settings() {
+        if let Some(ref clr) = s.custom_color {
+            if let Some(tmp_svg) = recolor_svg_to_temp(svg_path, clr) {
+                eprintln!("[rivalcfg-tray] Using recolored SVG: {}", tmp_svg.display());
+                svg_to_convert = tmp_svg.clone();
+            }
+        }
+    }
+
+    eprintln!("[rivalcfg-tray] Converting SVG to PNG: {} -> {}", svg_to_convert.display(), temp_path.display());
 
     // Convert SVG to PNG
     let output = Command::new("rsvg-convert")
@@ -448,7 +231,7 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
         .arg("64")
         .arg("-o")
         .arg(&temp_path)
-        .arg(svg_path)
+        .arg(&svg_to_convert)
         .output()
         .ok()?;
 
@@ -475,10 +258,79 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     
     // Update cache
     if let Ok(mut cache) = PNG_CACHE.lock() {
-        cache.insert(svg_path_str, (png_path_str.clone(), svg_modified));
+        cache.insert(cache_key, (png_path_str.clone(), svg_modified));
     }
     
     Some(png_path_str)
+}
+
+// Recolor an SVG by parsing its XML and replacing fill/stroke/style fill values with `color_hex`.
+// Returns a temp file PathBuf containing the modified SVG on success.
+fn recolor_svg_to_temp(original_svg: &PathBuf, color_hex: &str) -> Option<PathBuf> {
+    use std::fs;
+    use std::io::Write;
+    use xmltree::Element;
+
+    let data = fs::read_to_string(original_svg).ok()?;
+    let mut root = Element::parse(data.as_bytes()).ok()?;
+
+    fn recurse(elem: &mut xmltree::Element, color: &str) {
+        // Check attributes fill and stroke
+        if let Some(fill) = elem.attributes.get_mut("fill") {
+            if !fill.trim().is_empty() && fill.trim().to_lowercase() != "none" && !fill.trim().starts_with("url(") {
+                *fill = color.to_string();
+            }
+        }
+        if let Some(stroke) = elem.attributes.get_mut("stroke") {
+            if !stroke.trim().is_empty() && stroke.trim().to_lowercase() != "none" && !stroke.trim().starts_with("url(") {
+                *stroke = color.to_string();
+            }
+        }
+        // Handle style attribute (e.g., "fill:#000;stroke:none")
+        if let Some(style) = elem.attributes.get_mut("style") {
+            let mut parts: Vec<String> = style.split(';').map(|s| s.to_string()).collect();
+            for p in parts.iter_mut() {
+                if let Some(colon_pos) = p.find(':') {
+                    let (k, v) = p.split_at(colon_pos);
+                    let key = k.trim();
+                    let val = v[1..].trim();
+                    if key == "fill" || key == "stroke" {
+                        if !val.is_empty() && val.to_lowercase() != "none" && !val.starts_with("url(") {
+                            *p = format!("{}:{}", key, color);
+                        }
+                    }
+                }
+            }
+            *style = parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(";");
+        }
+
+        // Recurse into children
+        for child in elem.children.iter_mut() {
+            if let xmltree::XMLNode::Element(e) = child {
+                recurse(e, color);
+            }
+        }
+    }
+
+    recurse(&mut root, color_hex);
+
+    // Create a stable temporary svg path under the system temp dir so rsvg-convert can read it
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_nanos())
+        .unwrap_or_else(|| 0);
+    let tmp_path = std::env::temp_dir().join(format!("rivalcfg-recolor-{}.svg", nanos));
+    // Write XML into the temp file
+    let mut buf: Vec<u8> = Vec::new();
+    if root.write(&mut buf).is_err() {
+        return None;
+    }
+    if std::fs::write(&tmp_path, &buf).is_err() {
+        eprintln!("[rivalcfg-tray] Failed to write recolored SVG to {}", tmp_path.display());
+        return None;
+    }
+    Some(tmp_path)
 }
 use appindicator3::prelude::*;
 use appindicator3::{Indicator, IndicatorCategory, IndicatorStatus};
@@ -488,62 +340,7 @@ use std::path::PathBuf;
 // use std::process::Command; (moved to RealCommandRunner)
 use std::time::Duration;
 
-fn get_battery_level_with_runner(runner: &dyn CommandRunner) -> Option<(u8, bool)> {
-    eprintln!("[rivalcfg-tray] Attempting to run rivalcfg --battery-level");
-    let out = runner.run("rivalcfg", &["--battery-level"]);
-    if !out.success {
-        eprintln!("[rivalcfg-tray] rivalcfg command failed:\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
-        return None;
-    }
-    eprintln!("[rivalcfg-tray] rivalcfg output: {}", out.stdout);
-    let charging_status = get_battery_status(&out.stdout)?;
-    let second_last_word = out.stdout.split_whitespace().rev().nth(1)?;
-    let trimmed = second_last_word.trim_end_matches('%');
-    let percent = trimmed.parse::<u8>().ok()?;
-    Some((percent, charging_status))
-}
-
-fn get_battery_level() -> Option<(u8, bool)> {
-    let runner = RealCommandRunner::default();
-    get_battery_level_with_runner(&runner)
-}
-
-fn get_battery_status(stdout: &str) -> Option<bool> {
-    if stdout.contains("Discharging") {
-        Some(false)
-    } else if stdout.contains("Charging") {
-        Some(true)
-    } else {
-        None
-    }
-}
-
-fn get_mouse_name_with_runner(runner: &dyn CommandRunner) -> Option<String> {
-    let out = runner.run("rivalcfg", &["--help"]);
-    if !out.success {
-        eprintln!("[rivalcfg-tray] rivalcfg command failed:\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
-        return None;
-    }
-
-    let stdout = out.stdout;
-    // Find the line ending with "Options:"
-    let options_line = stdout.lines().find(|line| line.ends_with("Options:"));
-    if options_line.is_none() {
-        eprintln!("[rivalcfg-tray] Warning: Could not find 'Options:' line in rivalcfg output");
-        return None;
-    }
-    eprintln!("[rivalcfg-tray] Found 'Options:' line in rivalcfg output: {}", options_line.unwrap());
-    // Extract mouse name from the output (trim "Options:" from the end of the line.)
-    let mouse_name = options_line.unwrap().trim_end_matches("Options:").trim().to_string();
-    eprintln!("[rivalcfg-tray] rivalcfg Mouse: {}", mouse_name);
-
-    Some(mouse_name)
-}
-
-fn get_mouse_name() -> Option<String> {
-    let runner = RealCommandRunner::default();
-    get_mouse_name_with_runner(&runner)
-}
+// command-runner related helpers are located in `cmd` module
 
 fn find_icon(name: &str) -> Option<PathBuf> {
     let mut possible_paths = vec![
@@ -604,21 +401,32 @@ fn find_icon(name: &str) -> Option<PathBuf> {
 }
 
 fn battery_icon_path(level: u8) -> PathBuf {
-    let name = if level > 90 {
-        "battery-100.svg"
-    } else if level > 74 {
-        "battery-75.svg"
-    } else if level > 49 {
-        "battery-50.svg"
-    } else if level > 24 {
-        "battery-25.svg"
-    } else if level > 9 {
-        "battery-warn.svg"
+    // Determine prefix based on saved settings (light/dark/custom)
+    let prefix = if let Some(s) = load_settings() {
+        match s.colour_mode.as_deref() {
+            Some("dark") => "batterylight-",
+            Some("custom") => "battery-", // custom currently only stores a color; use default battery svgs
+            _ => "battery-",
+        }
     } else {
-        "battery-0.svg"
+        "battery-"
     };
 
-    find_icon(name).unwrap_or_else(|| PathBuf::from(format!("icons/{}", name)))
+    let name = if level > 90 {
+        format!("{}100.svg", prefix)
+    } else if level > 74 {
+        format!("{}75.svg", prefix)
+    } else if level > 49 {
+        format!("{}50.svg", prefix)
+    } else if level > 24 {
+        format!("{}25.svg", prefix)
+    } else if level > 9 {
+        format!("{}warn.svg", prefix)
+    } else {
+        format!("{}0.svg", prefix)
+    };
+
+    find_icon(&name).unwrap_or_else(|| PathBuf::from(format!("icons/{}", name)))
 }
 
 fn composite_battery_charging_svg(
@@ -687,8 +495,20 @@ fn main() -> anyhow::Result<()> {
     let separator = gtk::SeparatorMenuItem::new();
     menu.append(&separator);
 
+    // Create a submenu for Icon Colour Switch
     let colour_switch_item = gtk::MenuItem::with_label("Icon Colour Switch");
-    colour_switch_item.set_sensitive(true);
+    let colour_switch_menu = gtk::Menu::new();
+
+    let dark_item = gtk::MenuItem::with_label("Dark(default)");
+    let light_item = gtk::MenuItem::with_label("Light");
+    let custom_item = gtk::MenuItem::with_label("Custom");
+
+    colour_switch_menu.append(&dark_item);
+    colour_switch_menu.append(&light_item);
+    colour_switch_menu.append(&custom_item);
+    colour_switch_menu.show_all();
+
+    colour_switch_item.set_submenu(Some(&colour_switch_menu));
     menu.append(&colour_switch_item);
 
     menu.append(&separator);
@@ -925,7 +745,8 @@ fn main() -> anyhow::Result<()> {
                 polling_rate: polling_rate.clone(),
                 sleep_timer: if sleep_timer.is_empty() { None } else { Some(sleep_timer) },
                 dim_timer: if dim_timer.is_empty() { None } else { Some(dim_timer) },
-                colour_switch: None,
+                colour_mode: None,
+                custom_color: None,
             };
             if let Err(e) = save_settings(&settings) {
                 eprintln!("[rivalcfg-tray] Failed to save settings: {}", e);
@@ -1000,10 +821,89 @@ fn main() -> anyhow::Result<()> {
         });
     });
 
-    colour_switch_item.connect_activate(move |_| {
-        eprintln!("[rivalcfg-tray] Icon Colour Switch clicked - functionality not implemented yet.");
-        // Placeholder for future functionality
-    });
+    // Connect handlers for colour mode menu items: Dark, Light, Custom
+    {
+        // Dark -> use batterylight-* svgs
+        let indicator_d = indicator.clone();
+        let percent_d = percent_item.clone();
+        let status_d = status_item.clone();
+        dark_item.connect_activate(move |_| {
+            let mut settings = load_settings().unwrap_or_default();
+            settings.colour_mode = Some("dark".to_string());
+            settings.custom_color = None;
+            if let Err(e) = save_settings(&settings) {
+                eprintln!("[rivalcfg-tray] Failed to save colour setting: {}", e);
+            }
+            // Force regeneration even if battery state is unchanged
+            if let Ok(mut last) = LAST_BATTERY_STATE.lock() {
+                *last = None;
+            }
+            if let Some((level, charging)) = generate_tray_icon(&indicator_d) {
+                indicator_d.set_title(Some(&format!("Battery: {}%", level)));
+                percent_d.set_label(&format!("Battery: {}%", level));
+                status_d.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
+            }
+        });
+
+        // Light -> use battery-* svgs
+        let indicator_l = indicator.clone();
+        let percent_l = percent_item.clone();
+        let status_l = status_item.clone();
+        light_item.connect_activate(move |_| {
+            let mut settings = load_settings().unwrap_or_default();
+            settings.colour_mode = Some("light".to_string());
+            settings.custom_color = None;
+            if let Err(e) = save_settings(&settings) {
+                eprintln!("[rivalcfg-tray] Failed to save colour setting: {}", e);
+            }
+            // Force regeneration even if battery state is unchanged
+            if let Ok(mut last) = LAST_BATTERY_STATE.lock() {
+                *last = None;
+            }
+            if let Some((level, charging)) = generate_tray_icon(&indicator_l) {
+                indicator_l.set_title(Some(&format!("Battery: {}%", level)));
+                percent_l.set_label(&format!("Battery: {}%", level));
+                status_l.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
+            }
+        });
+
+        // Custom -> prompt for a hex color, store it and use default battery svgs
+        let indicator_c = indicator.clone();
+        let percent_c = percent_item.clone();
+        let status_c = status_item.clone();
+        custom_item.connect_activate(move |_| {
+            // Use a ColorChooserDialog so the user can pick a color visually
+            let dialog = gtk::ColorChooserDialog::new(Some("Select Custom Icon Color"), None::<&gtk::Window>);
+            dialog.add_button("_OK", gtk::ResponseType::Ok);
+            dialog.add_button("_Cancel", gtk::ResponseType::Cancel);
+            dialog.show_all();
+            let resp = dialog.run();
+            if resp == gtk::ResponseType::Ok.into() {
+                // Get the chosen RGBA and convert to hex #RRGGBB
+                let rgba = dialog.rgba();
+                let r = (rgba.red() * 255.0).round().clamp(0.0, 255.0) as u8;
+                let g = (rgba.green() * 255.0).round().clamp(0.0, 255.0) as u8;
+                let b = (rgba.blue() * 255.0).round().clamp(0.0, 255.0) as u8;
+                let hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
+                let mut settings = load_settings().unwrap_or_default();
+                settings.colour_mode = Some("custom".to_string());
+                settings.custom_color = Some(hex.clone());
+                if let Err(e) = save_settings(&settings) {
+                    eprintln!("[rivalcfg-tray] Failed to save custom colour: {}", e);
+                }
+                // Force regeneration even if battery state is unchanged
+                if let Ok(mut last) = LAST_BATTERY_STATE.lock() {
+                    *last = None;
+                }
+                if let Some((level, charging)) = generate_tray_icon(&indicator_c) {
+                    indicator_c.set_title(Some(&format!("Battery: {}%", level)));
+                    percent_c.set_label(&format!("Battery: {}%", level));
+                    status_c.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
+                }
+            }
+            unsafe { dialog.destroy(); }
+        });
+    }
 
     // Update icon every 30 seconds
     let percent_item_clone = percent_item.clone();
