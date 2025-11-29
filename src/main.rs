@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, LazyLock};
 use std::sync::Arc;
 use std::time::SystemTime;
+use std::io::Write;
 
 // settings includes
 use serde::{Deserialize, Serialize};
@@ -94,8 +95,64 @@ fn validate_timer(s: &str, name: &str) -> Result<(), String> {
     }
 }
 
+// Helpers to convert between hex color strings and gdk::RGBA
+fn rgba_from_hex(hex: &str) -> Option<gtk::gdk::RGBA> {
+    let h = hex.trim().trim_start_matches('#');
+    if h.len() == 6 {
+        let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+        return Some(gtk::gdk::RGBA::new(
+            r as f64 / 255.0,
+            g as f64 / 255.0,
+            b as f64 / 255.0,
+            1.0,
+        ));
+    }
+    if h.len() == 3 {
+        let rs = &h[0..1];
+        let gs = &h[1..2];
+        let bs = &h[2..3];
+        let r = u8::from_str_radix(&format!("{}{}", rs, rs), 16).ok()?;
+        let g = u8::from_str_radix(&format!("{}{}", gs, gs), 16).ok()?;
+        let b = u8::from_str_radix(&format!("{}{}", bs, bs), 16).ok()?;
+        return Some(gtk::gdk::RGBA::new(
+            r as f64 / 255.0,
+            g as f64 / 255.0,
+            b as f64 / 255.0,
+            1.0,
+        ));
+    }
+    None
+}
+
+fn hex_from_rgba(rgba: &gtk::gdk::RGBA) -> String {
+    let r = (rgba.red() * 255.0).round().clamp(0.0, 255.0) as u8;
+    let g = (rgba.green() * 255.0).round().clamp(0.0, 255.0) as u8;
+    let b = (rgba.blue() * 255.0).round().clamp(0.0, 255.0) as u8;
+    format!("#{:02x}{:02x}{:02x}", r, g, b)
+}
+
 // Function to cleanup temp files
 fn cleanup_temp_files() {
+    // Remove all rivalcfg*.svg files in the temp directory
+    let temp_dir = std::env::temp_dir();
+    if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(fname) = path.file_name().and_then(|f| f.to_str()) {
+                if fname.starts_with("rivalcfg") && fname.ends_with(".svg") {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        eprintln!("[rivalcfg-tray] Warning: Failed to cleanup temp SVG file {}: {}", path.display(), e);
+                    } else {
+                        eprintln!("[rivalcfg-tray] Cleaned up temp SVG file: {}", path.display());
+                    }
+                }
+            }
+        }
+    }
+
+    // Clean up PNG cache entries and their files
     if let Ok(mut cache) = PNG_CACHE.lock() {
         let mut to_remove = Vec::new();
         for (svg_path, (png_path, _)) in cache.iter() {
@@ -104,9 +161,9 @@ fn cleanup_temp_files() {
             } else {
                 // Try to remove the temp file
                 if let Err(e) = std::fs::remove_file(png_path) {
-                    eprintln!("[rivalcfg-tray] Warning: Failed to cleanup temp file {}: {}", png_path, e);
+                    eprintln!("[rivalcfg-tray] Warning: Failed to cleanup temp PNG file {}: {}", png_path, e);
                 } else {
-                    eprintln!("[rivalcfg-tray] Cleaned up temp file: {}", png_path);
+                    eprintln!("[rivalcfg-tray] Cleaned up temp PNG file: {}", png_path);
                     to_remove.push(svg_path.clone());
                 }
             }
@@ -160,7 +217,6 @@ fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
     };
     if let Some(png_path) = png_path {
         // eprintln!("[rivalcfg-tray] Setting icon: {}", png_path);
-        use std::io::Write;
         std::io::stderr().flush().ok();
         indicator.set_icon(&png_path);
     } else {
@@ -268,7 +324,6 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
 // Returns a temp file PathBuf containing the modified SVG on success.
 fn recolor_svg_to_temp(original_svg: &PathBuf, color_hex: &str) -> Option<PathBuf> {
     use std::fs;
-    use std::io::Write;
     use xmltree::Element;
 
     let data = fs::read_to_string(original_svg).ok()?;
@@ -511,7 +566,8 @@ fn main() -> anyhow::Result<()> {
     colour_switch_item.set_submenu(Some(&colour_switch_menu));
     menu.append(&colour_switch_item);
 
-    menu.append(&separator);
+    let lower_separator = gtk::SeparatorMenuItem::new();
+    menu.append(&lower_separator);
 
     let quit_item = gtk::MenuItem::with_label("Quit");
     menu.append(&quit_item);
@@ -545,6 +601,10 @@ fn main() -> anyhow::Result<()> {
 
     // Config window logic
     let runner_for_ui = runner.clone();
+    // Pre-clone UI elements so the originals remain available for other handlers
+    let indicator_for_config = indicator.clone();
+    let percent_for_config = percent_item.clone();
+    let status_for_config = status_item.clone();
     config_item.connect_activate(move |_| {
         use gtk::prelude::*;
         use gtk::{
@@ -603,6 +663,44 @@ fn main() -> anyhow::Result<()> {
         let dim_timer_entry = Entry::new();
         dim_box.pack_start(&dim_timer_entry, true, true, 0);
         vbox.pack_start(&dim_box, false, false, 0);
+
+        // Icon colour chooser (inline ColorButton)
+        let colour_box = GtkBox::new(Orientation::Horizontal, 4);
+        colour_box.pack_start(&Label::new(Some("Icon Colour (Custom):")), false, false, 0);
+        let color_button = gtk::ColorButton::new();
+        // Initialize ColorButton from saved settings if present
+        if let Some(s) = load_settings() {
+            if let Some(ref hex) = s.custom_color {
+                if let Some(rgba) = rgba_from_hex(hex) {
+                    color_button.set_rgba(&rgba);
+                }
+            }
+        }
+        colour_box.pack_start(&color_button, false, false, 0);
+        vbox.pack_start(&colour_box, false, false, 0);
+
+        // When the ColorButton color changes, save as custom color and regenerate icon
+        let indicator_cb = indicator_for_config.clone();
+        let percent_cb = percent_for_config.clone();
+        let status_cb = status_for_config.clone();
+        color_button.connect_color_set(move |btn| {
+            let rgba = btn.rgba();
+            let hex = hex_from_rgba(&rgba);
+                let mut settings = load_settings().unwrap_or_default();
+                settings.colour_mode = Some("custom".to_string());
+                settings.custom_color = Some(hex.clone());
+                if let Err(e) = save_settings(&settings) {
+                    eprintln!("[rivalcfg-tray] Failed to save custom colour: {}", e);
+                }
+                if let Ok(mut last) = LAST_BATTERY_STATE.lock() {
+                    *last = None;
+                }
+                if let Some((level, charging)) = generate_tray_icon(&indicator_cb) {
+                    indicator_cb.set_title(Some(&format!("Battery: {}%", level)));
+                    percent_cb.set_label(&format!("Battery: {}%", level));
+                    status_cb.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
+                }
+        });
 
         // Buttons
         let btn_box = GtkBox::new(Orientation::Horizontal, 8);
@@ -822,12 +920,11 @@ fn main() -> anyhow::Result<()> {
     });
 
     // Connect handlers for colour mode menu items: Dark, Light, Custom
-    {
-        // Dark -> use batterylight-* svgs
-        let indicator_d = indicator.clone();
-        let percent_d = percent_item.clone();
-        let status_d = status_item.clone();
-        dark_item.connect_activate(move |_| {
+    // Clone the UI elements for each handler to avoid moving out of the main scope
+    let indicator_for_dark = indicator.clone();
+    let percent_for_dark = percent_item.clone();
+    let status_for_dark = status_item.clone();
+    dark_item.connect_activate(move |_| {
             let mut settings = load_settings().unwrap_or_default();
             settings.colour_mode = Some("dark".to_string());
             settings.custom_color = None;
@@ -838,18 +935,17 @@ fn main() -> anyhow::Result<()> {
             if let Ok(mut last) = LAST_BATTERY_STATE.lock() {
                 *last = None;
             }
-            if let Some((level, charging)) = generate_tray_icon(&indicator_d) {
-                indicator_d.set_title(Some(&format!("Battery: {}%", level)));
-                percent_d.set_label(&format!("Battery: {}%", level));
-                status_d.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
+            if let Some((level, charging)) = generate_tray_icon(&indicator_for_dark) {
+                indicator_for_dark.set_title(Some(&format!("Battery: {}%", level)));
+                percent_for_dark.set_label(&format!("Battery: {}%", level));
+                status_for_dark.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
             }
         });
 
-        // Light -> use battery-* svgs
-        let indicator_l = indicator.clone();
-        let percent_l = percent_item.clone();
-        let status_l = status_item.clone();
-        light_item.connect_activate(move |_| {
+    let indicator_for_light = indicator.clone();
+    let percent_for_light = percent_item.clone();
+    let status_for_light = status_item.clone();
+    light_item.connect_activate(move |_| {
             let mut settings = load_settings().unwrap_or_default();
             settings.colour_mode = Some("light".to_string());
             settings.custom_color = None;
@@ -860,62 +956,78 @@ fn main() -> anyhow::Result<()> {
             if let Ok(mut last) = LAST_BATTERY_STATE.lock() {
                 *last = None;
             }
-            if let Some((level, charging)) = generate_tray_icon(&indicator_l) {
-                indicator_l.set_title(Some(&format!("Battery: {}%", level)));
-                percent_l.set_label(&format!("Battery: {}%", level));
-                status_l.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
+            if let Some((level, charging)) = generate_tray_icon(&indicator_for_light) {
+                indicator_for_light.set_title(Some(&format!("Battery: {}%", level)));
+                percent_for_light.set_label(&format!("Battery: {}%", level));
+                status_for_light.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
             }
         });
 
-        // Custom -> prompt for a hex color, store it and use default battery svgs
-        let indicator_c = indicator.clone();
-        let percent_c = percent_item.clone();
-        let status_c = status_item.clone();
-        custom_item.connect_activate(move |_| {
-            // Use a ColorChooserDialog so the user can pick a color visually
-            let dialog = gtk::ColorChooserDialog::new(Some("Select Custom Icon Color"), None::<&gtk::Window>);
-            dialog.add_button("_OK", gtk::ResponseType::Ok);
-            dialog.add_button("_Cancel", gtk::ResponseType::Cancel);
-            dialog.show_all();
-            let resp = dialog.run();
-            if resp == gtk::ResponseType::Ok.into() {
-                // Get the chosen RGBA and convert to hex #RRGGBB
-                let rgba = dialog.rgba();
-                let r = (rgba.red() * 255.0).round().clamp(0.0, 255.0) as u8;
-                let g = (rgba.green() * 255.0).round().clamp(0.0, 255.0) as u8;
-                let b = (rgba.blue() * 255.0).round().clamp(0.0, 255.0) as u8;
-                let hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
+    // Custom -> open a ColorChooserDialog so the user can pick a custom color
+    let indicator_for_custom = indicator.clone();
+    let percent_for_custom = percent_item.clone();
+    let status_for_custom = status_item.clone();
+    custom_item.connect_activate(move |_| {
+        use gtk::prelude::*;
+        use gtk::ColorChooserDialog;
+
+        // Create the dialog
+        let dialog = ColorChooserDialog::new(Some("Pick icon color"), None::<&gtk::Window>);
+
+        // Initialize from saved settings
+        if let Some(s) = load_settings() {
+            if let Some(ref hex) = s.custom_color {
+                if let Some(rgba) = rgba_from_hex(hex) {
+                    dialog.set_rgba(&rgba);
+                }
+            }
+        }
+
+        // Prepare clones for the response callback so we don't move outer variables
+        let ind_cb = indicator_for_custom.clone();
+        let pct_cb = percent_for_custom.clone();
+        let status_cb = status_for_custom.clone();
+
+        // Show dialog and react to color changes immediately
+        dialog.connect_response(move |dlg, resp| {
+            if resp == gtk::ResponseType::Ok {
+                // Read the dialog's rgba property (works across gtk-rs versions)
+                let rgba: gtk::gdk::RGBA = dlg.property::<gtk::gdk::RGBA>("rgba");
+                let hex = hex_from_rgba(&rgba);
                 let mut settings = load_settings().unwrap_or_default();
                 settings.colour_mode = Some("custom".to_string());
                 settings.custom_color = Some(hex.clone());
                 if let Err(e) = save_settings(&settings) {
                     eprintln!("[rivalcfg-tray] Failed to save custom colour: {}", e);
                 }
-                // Force regeneration even if battery state is unchanged
                 if let Ok(mut last) = LAST_BATTERY_STATE.lock() {
                     *last = None;
                 }
-                if let Some((level, charging)) = generate_tray_icon(&indicator_c) {
-                    indicator_c.set_title(Some(&format!("Battery: {}%", level)));
-                    percent_c.set_label(&format!("Battery: {}%", level));
-                    status_c.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
+                if let Some((level, charging)) = generate_tray_icon(&ind_cb) {
+                    ind_cb.set_title(Some(&format!("Battery: {}%", level)));
+                    pct_cb.set_label(&format!("Battery: {}%", level));
+                    status_cb.set_label(&format!("Status: {}", if charging { "Charging" } else { "Discharging" }));
                 }
             }
-            unsafe { dialog.destroy(); }
+            dlg.close();
         });
-    }
+
+        dialog.show_all();
+    });
 
     // Update icon every 30 seconds
     let percent_item_clone = percent_item.clone();
+    let indicator_for_timer = indicator.clone();
+    let status_item_clone_for_timer = status_item.clone();
     glib::timeout_add_local(Duration::from_secs(30), move || {
-        let (level, charging) = generate_tray_icon(&indicator).unwrap_or((0, false));
-        indicator.set_title(Some(&format!("Battery: {}%", level)));
+        let (level, charging) = generate_tray_icon(&indicator_for_timer).unwrap_or((0, false));
+        indicator_for_timer.set_title(Some(&format!("Battery: {}%", level)));
         percent_item_clone.set_label(&format!("Battery: {}%", level));
         let status_text = format!(
             "Status: {}",
             if charging { "Charging" } else { "Discharging" }
         );
-        status_item.set_label(&status_text);
+        status_item_clone_for_timer.set_label(&status_text);
         ControlFlow::Continue
     });
 
@@ -931,3 +1043,6 @@ fn main() -> anyhow::Result<()> {
     cleanup_temp_files();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
