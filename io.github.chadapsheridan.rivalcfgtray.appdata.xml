@@ -15,7 +15,7 @@
       <li>System tray icon showing battery level</li>
       <li>Quick access to mouse settings</li>
       <li>Wayland compatibility</li>
-      <li>GTK4-based interface</li>
+      <li>GTK-based interface</li>
     </ul>
   </description>
   <screenshots>
