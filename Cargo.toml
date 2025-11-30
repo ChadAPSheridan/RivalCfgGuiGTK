@@ -30,4 +30,8 @@ priority = "optional"
 
 # Files to include in the .deb from the built package directory (if using a pkg/ layout)
 # cargo-deb will package the compiled binary by default; use `assets` to include extra files
-assets = [ ["pkg/usr/share/applications/rivalcfg-tray.desktop","/usr/share/applications/rivalcfg-tray.desktop"], ["pkg/usr/share/metainfo/io.github.chadapsheridan.rivalcfgtray.appdata.xml","/usr/share/metainfo/io.github.chadapsheridan.rivalcfgtray.appdata.xml"], ["pkg/usr/share/icons/hicolor/256x256/apps/rivalcfg-tray.png","/usr/share/icons/hicolor/256x256/apps/rivalcfg-tray.png"] ]
+assets = [
+	["pkg/usr/share/applications/rivalcfg-tray.desktop", "/usr/share/applications/rivalcfg-tray.desktop", "0644"],
+	["pkg/usr/share/metainfo/io.github.chadapsheridan.rivalcfgtray.appdata.xml", "/usr/share/metainfo/io.github.chadapsheridan.rivalcfgtray.appdata.xml", "0644"],
+	["pkg/usr/share/icons/hicolor/256x256/apps/rivalcfg-tray.png", "/usr/share/icons/hicolor/256x256/apps/rivalcfg-tray.png", "0644"]
+]
