@@ -172,6 +172,9 @@ jobs:
         # Copy built files from pkg/ directory
         cp -r pkg/usr/* debian-pkg/usr/
         
+        # Choose distro-specific provider package names for rsvg-convert
+        DEB_RSVG="librsvg2-bin"
+
         # Create control file
         cat > debian-pkg/DEBIAN/control << EOF
         Package: rivalcfg-tray
@@ -179,7 +182,7 @@ jobs:
         Section: utils
         Priority: optional
         Architecture: amd64
-        Depends: libgtk-3-0, libayatana-appindicator3-1, librsvg2-bin, python3-pip
+        Depends: libgtk-3-0, libayatana-appindicator3-1, ${DEB_RSVG}, python3-pip
         Recommends: python3-rivalcfg
         Maintainer: Chad Sheridan <chad.sheridan@cysec.ca>
         Description: System tray application for SteelSeries mouse configuration
@@ -206,6 +209,28 @@ jobs:
         
         echo "Built DEB package: rivalcfg-tray_${VERSION}_amd64.deb"
         ls -la *.deb
+
+    - name: Build DEB package with cargo-deb (optional)
+      run: |
+        VERSION="${{ steps.config.outputs.VERSION }}"
+
+        # Install cargo-deb and build a .deb using Cargo.toml metadata (uses assets and depends from package.metadata.deb)
+        echo "Installing cargo-deb..."
+        cargo install cargo-deb --locked || true
+
+        echo "Running cargo deb (no-build)..."
+        # Try no-build first to avoid rebuilding; fall back to full build if necessary
+        if cargo deb --no-build --deb-version "$VERSION"; then
+          echo "cargo-deb produced a .deb"
+        else
+          echo "cargo-deb --no-build failed; running cargo deb (full build)"
+          cargo deb --deb-version "$VERSION"
+        fi
+
+        # Move the generated deb into workspace root for release artifacts
+        if [ -f target/debian/rivalcfg-tray_${VERSION}_amd64.deb ]; then
+          mv target/debian/rivalcfg-tray_${VERSION}_amd64.deb . || true
+        fi
     
     - name: Build RPM package
       run: |
@@ -214,19 +239,22 @@ jobs:
         # Create RPM build structure (rpm package is already installed in system dependencies)
         mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
         
+        # Choose distro-specific provider package names for rsvg-convert
+        RPM_RSVG="librsvg2-tools"
+
         # Create spec file
         cat > ~/rpmbuild/SPECS/rivalcfg-tray.spec << EOF
         Name:           rivalcfg-tray
         Version:        $VERSION
         Release:        1%{?dist}
         Summary:        System tray application for SteelSeries mouse configuration
-        
+
         License:        GPLv3+
         URL:            https://github.com/ChadAPSheridan/RivalCfgGuiGTK
-        
+
         Requires:       gtk3
         Requires:       libayatana-appindicator-gtk3
-        Requires:       librsvg2-tools
+        Requires:       ${RPM_RSVG}
         Requires:       rivalcfg
         
         %description

@@ -16,7 +16,18 @@ serde_json = "1.0"
 dirs = "4.0"
 
 # System dependency required for SVG to PNG conversion at runtime:
-#   rsvg-convert (usually provided by the librsvg2-bin package)
+#   rsvg-convert (usually provided by the librsvg2-bin or librsvg2-tools package)
 
 # XML parsing used to implement robust SVG recoloring for custom icon colors
 xmltree = "0.10"
+
+[package.metadata.deb]
+depends = ["rivalcfg", "librsvg2-bin", "libayatana-appindicator3-1", "libgtk-3-0"]
+recommends = ["python3-pip"]
+maintainer = "Chad Sheridan <chad.sheridan@cysec.ca>"
+section = "utils"
+priority = "optional"
+
+# Files to include in the .deb from the built package directory (if using a pkg/ layout)
+# cargo-deb will package the compiled binary by default; use `assets` to include extra files
+assets = [ ["pkg/usr/share/applications/rivalcfg-tray.desktop","/usr/share/applications/rivalcfg-tray.desktop"], ["pkg/usr/share/metainfo/io.github.chadapsheridan.rivalcfgtray.appdata.xml","/usr/share/metainfo/io.github.chadapsheridan.rivalcfgtray.appdata.xml"], ["pkg/usr/share/icons/hicolor/256x256/apps/rivalcfg-tray.png","/usr/share/icons/hicolor/256x256/apps/rivalcfg-tray.png"] ]
