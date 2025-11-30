@@ -231,19 +231,27 @@ fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
 }
 
 // use std::io::Stdout;
+const DARK_MODE_COLOR: &str = "#ffffff";
+
 fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     use std::process::Command;
 
-    // Check cache first and respect custom_color when present
+    // Check cache first and determine if recoloring is required. We support three
+    // cases: custom color, dark mode (predefined color), or no recolor.
     let svg_path_str = svg_path.to_string_lossy().to_string();
     let svg_modified = std::fs::metadata(svg_path).ok()?.modified().ok()?;
     let mut cache_key = svg_path_str.clone();
+    let mut color_for_recolor: Option<String> = None;
     if let Some(s) = load_settings() {
         if let Some(ref clr) = s.custom_color {
-            // include color in cache key
+            color_for_recolor = Some(clr.clone());
             cache_key = format!("{}::{}", svg_path_str, clr);
+        } else if s.colour_mode.as_deref() == Some("dark") {
+            color_for_recolor = Some(DARK_MODE_COLOR.to_string());
+            cache_key = format!("{}::{}", svg_path_str, DARK_MODE_COLOR);
         }
     }
+
     if let Ok(cache) = PNG_CACHE.lock() {
         if let Some((cached_png_path, cached_time)) = cache.get(&cache_key) {
             if std::path::Path::new(cached_png_path).exists() && *cached_time >= svg_modified {
@@ -266,14 +274,14 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     };
 
     let temp_path = temp_file.path().to_path_buf();
-    // If user selected a custom color, create a recolored temporary SVG and convert that instead
+
+    // If we have an effective recolor color (custom or dark), create a recolored SVG
+    // and convert that instead
     let mut svg_to_convert = svg_path.clone();
-    if let Some(s) = load_settings() {
-        if let Some(ref clr) = s.custom_color {
-            if let Some(tmp_svg) = recolor_svg_to_temp(svg_path, clr) {
-                eprintln!("[rivalcfg-tray] Using recolored SVG: {}", tmp_svg.display());
-                svg_to_convert = tmp_svg.clone();
-            }
+    if let Some(color) = color_for_recolor {
+        if let Some(tmp_svg) = recolor_svg_to_temp(svg_path, &color) {
+            eprintln!("[rivalcfg-tray] Using recolored SVG: {}", tmp_svg.display());
+            svg_to_convert = tmp_svg.clone();
         }
     }
 
@@ -457,15 +465,9 @@ fn find_icon(name: &str) -> Option<PathBuf> {
 
 fn battery_icon_path(level: u8) -> PathBuf {
     // Determine prefix based on saved settings (light/dark/custom)
-    let prefix = if let Some(s) = load_settings() {
-        match s.colour_mode.as_deref() {
-            Some("dark") => "batterylight-",
-            Some("custom") => "battery-", // custom currently only stores a color; use default battery svgs
-            _ => "battery-",
-        }
-    } else {
-        "battery-"
-    };
+    // Always use the base battery SVG names; recoloring (for dark/custom) is
+    // performed later in the SVG->PNG pipeline based on settings.
+    let prefix = "battery-";
 
     let name = if level > 90 {
         format!("{}100.svg", prefix)
@@ -554,9 +556,9 @@ fn main() -> anyhow::Result<()> {
     let colour_switch_item = gtk::MenuItem::with_label("Icon Colour Switch");
     let colour_switch_menu = gtk::Menu::new();
 
-    let dark_item = gtk::MenuItem::with_label("Dark(default)");
-    let light_item = gtk::MenuItem::with_label("Light");
-    let custom_item = gtk::MenuItem::with_label("Custom");
+    let dark_item = gtk::MenuItem::with_label("Dark Mode (default)");
+    let light_item = gtk::MenuItem::with_label("Light Mode");
+    let custom_item = gtk::MenuItem::with_label("Custom Colour...");
 
     colour_switch_menu.append(&dark_item);
     colour_switch_menu.append(&light_item);
