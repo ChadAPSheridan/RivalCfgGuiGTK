@@ -135,17 +135,24 @@ fn hex_from_rgba(rgba: &gtk::gdk::RGBA) -> String {
 
 // Function to cleanup temp files
 fn cleanup_temp_files() {
-    // Remove all rivalcfg*.svg files in the temp directory
-    let temp_dir = std::env::temp_dir();
-    if let Ok(entries) = std::fs::read_dir(&temp_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(fname) = path.file_name().and_then(|f| f.to_str()) {
-                if fname.starts_with("rivalcfg") && fname.ends_with(".svg") {
-                    if let Err(e) = std::fs::remove_file(&path) {
-                        eprintln!("[rivalcfg-tray] Warning: Failed to cleanup temp SVG file {}: {}", path.display(), e);
-                    } else {
-                        eprintln!("[rivalcfg-tray] Cleaned up temp SVG file: {}", path.display());
+    // Cleanup from both temp and runtime directories
+    let mut dirs_to_clean = vec![std::env::temp_dir()];
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        dirs_to_clean.push(PathBuf::from(runtime_dir).join("rivalcfg-tray"));
+    }
+
+    for temp_dir in dirs_to_clean {
+        // Remove all rivalcfg*.svg files
+        if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(fname) = path.file_name().and_then(|f| f.to_str()) {
+                    if fname.starts_with("rivalcfg") && fname.ends_with(".svg") {
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            eprintln!("[rivalcfg-tray] Warning: Failed to cleanup temp SVG file {}: {}", path.display(), e);
+                        } else {
+                            eprintln!("[rivalcfg-tray] Cleaned up temp SVG file: {}", path.display());
+                        }
                     }
                 }
             }
@@ -218,7 +225,23 @@ fn generate_tray_icon(indicator: &Indicator) -> Option<(u8, bool)> {
     if let Some(png_path) = png_path {
         // eprintln!("[rivalcfg-tray] Setting icon: {}", png_path);
         std::io::stderr().flush().ok();
-        indicator.set_icon(&png_path);
+        
+        // COSMIC desktop compatibility: Use icon theme path instead of absolute path
+        // COSMIC's status-area applet renders icons better when using theme-based approach
+        if let Some(icon_dir) = PathBuf::from(&png_path).parent() {
+            indicator.set_icon_theme_path(&icon_dir.to_string_lossy());
+            if let Some(icon_filename) = PathBuf::from(&png_path).file_stem() {
+                indicator.set_icon(&icon_filename.to_string_lossy());
+                eprintln!("[rivalcfg-tray] Set icon theme path: {}, icon name: {}", 
+                    icon_dir.display(), icon_filename.to_string_lossy());
+            } else {
+                // Fallback to absolute path for other desktops
+                indicator.set_icon(&png_path);
+            }
+        } else {
+            // Fallback to absolute path
+            indicator.set_icon(&png_path);
+        }
     } else {
         eprintln!(
             "[rivalcfg-tray] Warning: Failed to convert SVG to PNG for icon: {} after retries",
@@ -261,11 +284,22 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
         }
     }
 
+    // Use XDG runtime dir or fallback to temp dir for COSMIC compatibility
+    // Using a runtime directory helps COSMIC's status-area applet find icons more reliably
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .and_then(|d| {
+            let path = PathBuf::from(d).join("rivalcfg-tray");
+            std::fs::create_dir_all(&path).ok()?;
+            Some(path)
+        })
+        .unwrap_or_else(|| std::env::temp_dir());
+
     // Create a temp file with a unique name
     let temp_file = match tempfile::Builder::new()
         .prefix("rivalcfg-tray-")
         .suffix(".png")
-        .tempfile() {
+        .tempfile_in(&runtime_dir) {
             Ok(file) => file,
             Err(e) => {
                 eprintln!("[rivalcfg-tray] Failed to create temp file: {}", e);
