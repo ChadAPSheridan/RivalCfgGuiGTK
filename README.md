@@ -2,6 +2,10 @@
 
 This is a Rust application using GTK for the GUI. It interacts with the rivalcfg CLI to control SteelSeries mice, and provides a system tray icon that represents the mouse battery level. The project is designed for easy Flatpak packaging and maximum compatibility with Wayland-based desktop environments and window managers.
 
+## ⚠️ COSMIC Desktop Users
+
+If you're using COSMIC desktop and the tray icon is not visible, please see [COSMIC_COMPATIBILITY.md](COSMIC_COMPATIBILITY.md) for details and workarounds. The app is running correctly, but COSMIC's status-area applet may not render the icon. This is a known issue being tracked with the COSMIC team.
+
 ## Features
 
 - GTK GUI (Wayland-friendly)

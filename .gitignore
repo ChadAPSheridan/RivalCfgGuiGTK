@@ -30,6 +30,7 @@ Cargo.lock
 # Generated documentation
 /doc/
 /target/doc/
+**/localdocs/
 
 # Test coverage
 *.profraw
