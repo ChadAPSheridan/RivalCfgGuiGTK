@@ -1,15 +1,17 @@
 # Rust GTK Rivalcfg Tray App
 
-This is a Rust application using GTK for the GUI. It interacts with the rivalcfg CLI to control SteelSeries mice, and provides a system tray icon that represents the mouse battery level. The project is designed for easy Flatpak packaging and maximum compatibility with Wayland-based desktop environments and window managers.
+This is a Rust application using GTK for the GUI and tray-icon for the system tray. It interacts with the rivalcfg CLI to control SteelSeries mice, and provides a system tray icon that represents the mouse battery level. The project is designed for easy Flatpak packaging and maximum compatibility with Wayland-based desktop environments and window managers.
 
 ## ⚠️ COSMIC Desktop Users
 
-If you're using COSMIC desktop and the tray icon is not visible, please see [COSMIC_COMPATIBILITY.md](COSMIC_COMPATIBILITY.md) for details and workarounds. The app is running correctly, but COSMIC's status-area applet may not render the icon. This is a known issue being tracked with the COSMIC team.
+**As of version 1.2.0, this application uses tray-icon instead of libappindicator for better COSMIC desktop compatibility.** If you're upgrading from an older version, the new implementation should provide improved tray icon rendering across different desktop environments including COSMIC.
+
+For historical information about the AppIndicator implementation, see [COSMIC_COMPATIBILITY.md](COSMIC_COMPATIBILITY.md).
 
 ## Features
 
 - GTK GUI (Wayland-friendly)
-- System tray icon shows battery level
+- System tray icon shows battery level (using tray-icon library)
 - Interacts with rivalcfg CLI
 
 ## Requirements
@@ -25,13 +27,13 @@ If you're using COSMIC desktop and the tray icon is not visible, please see [COS
 On Debian/Ubuntu you may need the GTK development package and friends:
 
 ```bash
-sudo apt install libgtk-4-dev libayatana-appindicator3-1 librsvg2-bin python3-pip pipx
+sudo apt install libgtk-3-dev librsvg2-bin python3-pip pipx
 ```
 
 On Fedora/RHEL the package names are typically:
 
 ```bash
-sudo dnf install gtk4-devel libayatana-appindicator librsvg2-tools python3-pip
+sudo dnf install gtk3-devel librsvg2-tools python3-pip
 ```
 
 1. Run the application: `cargo run`

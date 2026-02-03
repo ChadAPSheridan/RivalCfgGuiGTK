@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-02-03
+
+### Changed
+
+- **Major Architecture Change**: Migrated from libappindicator3 to tray-icon library
+  - Removed dependency on libayatana-appindicator3
+  - Improved cross-platform compatibility
+  - Better integration with modern desktop environments including COSMIC
+  - Direct icon management using tray-icon's native implementation
+  
+### Added
+
+- image crate dependency for PNG processing
+- tray-icon 0.19 as the new system tray backend
+
+### Removed
+
+- appindicator3 crate dependency
+- libayatana-appindicator system dependency
+
+### Technical Details
+
+- Icons are now loaded directly from PNG files and converted to RGBA format
+- Menu system uses tray-icon's native menu implementation
+- Event handling integrated with GTK's glib event loop
+- All previous functionality maintained with the new implementation
+
 ## [1.0.2] - 2026-01-11
 
 ### Changed

@@ -7,9 +7,9 @@ pkgdesc="A GTK-based GUI for Rivalcfg tray indicator"
 arch=('x86_64')
 url="https://github.com/ChadAPSheridan/RivalCfgGuiGTK"
 license=('GPL')
-# runtime dependencies: gtk (gtk3 for most distributions packaging this project), libayatana-appindicator for indicators,
+# runtime dependencies: gtk (gtk3 for most distributions packaging this project),
 # hidapi/rivalcfg for device access. librsvg provides rsvg-convert used at runtime to render SVGs to PNG for the indicator
-depends=('gtk3' 'libayatana-appindicator' 'hidapi' 'rivalcfg' 'librsvg')
+depends=('gtk3' 'hidapi' 'rivalcfg' 'librsvg')
 makedepends=('cargo' 'rust')
 # Use GitHub release tarball (uploaded by the workflow)
 source=("$pkgname-$pkgver.tar.gz::https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/v${pkgver}/RivalCfgGuiGTK-${pkgver}.tar.gz")

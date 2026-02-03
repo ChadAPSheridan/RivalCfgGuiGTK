@@ -1,12 +1,21 @@
 # COSMIC Desktop Compatibility
 
-## Issue Summary
+## Implementation Change (v1.2.0+)
 
-After a COSMIC desktop update on Arch Linux, the rivalcfg-tray icon may not be visible in the system tray, despite the application running correctly and being properly registered with the StatusNotifier D-Bus service.
+**As of version 1.2.0, rivalcfg-tray has migrated from libappindicator3 to the tray-icon library.** This change was made to improve compatibility with the COSMIC desktop environment, which has ongoing development and changes to its system tray implementation.
 
-## Technical Details
+### Why the Change?
 
-### What's Working
+The COSMIC desktop environment underwent changes that affected how system tray icons are rendered. The tray-icon library provides:
+
+1. **Better Cross-Platform Support**: Works natively across multiple desktop environments
+2. **Modern Implementation**: Uses current system tray protocols
+3. **Simplified Dependencies**: Removes the dependency on libayatana-appindicator
+4. **Direct Icon Management**: Better control over icon rendering and updates
+
+## Technical Details (Historical - AppIndicator Era)
+
+### What Was Working (Pre-v1.2.0 with AppIndicator)
 
 - ✅ The application runs without errors
 - ✅ Battery monitoring and updates work correctly  
