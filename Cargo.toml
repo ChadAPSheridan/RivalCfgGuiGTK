@@ -1,6 +1,6 @@
 [package]
 name = "rivalcfg-tray"
-version = "1.2.0"
+version = "1.2.1"
 # cargo edition, NOT APP
 edition = "2024"
 
