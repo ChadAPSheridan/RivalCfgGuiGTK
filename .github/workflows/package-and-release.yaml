@@ -37,8 +37,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           libgtk-3-dev \
-          libayatana-appindicator3-dev \
           librsvg2-bin \
+          pkg-config \
+          libssl-dev \
           rpm \
           alien \
           build-essential \
@@ -46,7 +47,8 @@ jobs:
           debhelper \
           dh-make \
           fakeroot \
-          lintian
+          lintian \
+          rsync
     
     - name: Load configuration and set version
       id: config
@@ -182,7 +184,7 @@ jobs:
         Section: utils
         Priority: optional
         Architecture: amd64
-        Depends: libgtk-3-0, libayatana-appindicator3-1, ${DEB_RSVG}, python3-pip
+        Depends: libgtk-3-0, ${DEB_RSVG}, python3-pip
         Recommends: python3-rivalcfg
         Maintainer: Chad Sheridan <chad.sheridan@cysec.ca>
         Description: System tray application for SteelSeries mouse configuration
@@ -253,7 +255,6 @@ jobs:
         URL:            https://github.com/ChadAPSheridan/RivalCfgGuiGTK
 
         Requires:       gtk3
-        Requires:       libayatana-appindicator-gtk3
         Requires:       ${RPM_RSVG}
         Requires:       rivalcfg
         
@@ -335,7 +336,7 @@ jobs:
          
           Install dependencies first:
           ```bash
-          sudo apt install libgtk-3-0 libayatana-appindicator3-1 librsvg2-bin python3-pip pipx
+          sudo apt install libgtk-3-0 librsvg2-bin python3-pip pipx
           sudo pipx install rivalcfg
           ```
           Download the `.deb` package from the assets below, then install with dependency resolution:
@@ -346,7 +347,7 @@ jobs:
           **Fedora/RHEL:**
           Install dependencies first:
           ```bash
-          sudo dnf install gtk3 libayatana-appindicator-gtk3 librsvg2-tools python3-pip
+          sudo dnf install gtk3 librsvg2-tools python3-pip
           sudo pip3 install rivalcfg
           ```
 
@@ -361,7 +362,7 @@ jobs:
           ### Dependencies
           - `rivalcfg` - SteelSeries mouse configuration tool
           - `librsvg` (or `librsvg2-bin`/`librsvg2-tools`) - For SVG to PNG conversion
-          - GTK3 and AppIndicator libraries
+          - GTK3 libraries
           
           ### Changes
           - System tray integration for SteelSeries mouse battery monitoring
@@ -431,7 +432,6 @@ jobs:
         	makedepends = cargo
         	makedepends = rust
         	depends = gtk3
-        	depends = libayatana-appindicator
         	depends = hidapi
         	depends = rivalcfg
         	depends = librsvg

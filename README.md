@@ -53,7 +53,7 @@ paru -S rivalcfg-tray
 Install dependencies first:
 
 ```bash
-sudo apt install libgtk-3-0 libayatana-appindicator3-1 librsvg2-bin python3-pip pipx
+sudo apt install libgtk-3-0 librsvg2-bin python3-pip pipx
 sudo pipx install rivalcfg
 ```
 
@@ -67,7 +67,7 @@ sudo apt install ./rivalcfg-tray_${{ steps.config.outputs.VERSION }}_amd64.deb
 Install dependencies first:
 
 ```bash
-sudo dnf install gtk3 libayatana-appindicator-gtk3 librsvg2-tools python3-pip
+sudo dnf install gtk3 librsvg2-tools python3-pip
 sudo pip3 install rivalcfg
 ```
 
@@ -84,7 +84,7 @@ Download the source tarball and build with cargo.
 
 - `rivalcfg` - SteelSeries mouse configuration tool
 - `librsvg` (or `librsvg2-bin`/`librsvg2-tools`) - For SVG to PNG conversion (provides `rsvg-convert`)
-- GTK and AppIndicator (libayatana) libraries
+- GTK libraries
 
 ## Roadmap
 
