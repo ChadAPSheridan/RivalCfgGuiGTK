@@ -10,13 +10,14 @@ license=('GPL')
 # runtime dependencies: gtk (gtk3 for most distributions packaging this project),
 # hidapi/rivalcfg for device access. librsvg provides rsvg-convert used at runtime to render SVGs to PNG for the indicator
 depends=('gtk3' 'hidapi' 'rivalcfg' 'librsvg')
-makedepends=('cargo' 'rust')
+makedepends=('cargo' 'rust' 'rustup')
 # Use GitHub release tarball (uploaded by the workflow)
 source=("$pkgname-$pkgver.tar.gz::https://github.com/ChadAPSheridan/RivalCfgGuiGTK/releases/download/v${pkgver}/RivalCfgGuiGTK-${pkgver}.tar.gz")
 sha256sums=({{SHA256SUM}})  # Replace with the actual checksum
 
 build() {
   cd "$srcdir/RivalCfgGuiGTK-$pkgver"
+  rustup default stable || true
   cargo build --release --locked
 }
 

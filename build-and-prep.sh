@@ -82,6 +82,8 @@ rm -rf target pkg
 
 # Build the project
 echo "Building $PKGNAME version $PKGVER..."
+# Ensure Rust toolchain is initialized
+rustup default stable || true
 cargo build --release
 # Prepare the package directory
 echo "Preparing package directory..."
