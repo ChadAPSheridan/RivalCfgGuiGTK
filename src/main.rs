@@ -183,7 +183,7 @@ fn cleanup_temp_files() {
 
 fn generate_tray_icon(tray_icon: &TrayIcon) -> Option<(u8, bool)> {
     let (level, charging) = get_battery_level().unwrap_or((0, false));
-    
+
     // Check if battery state has changed
     if let Ok(mut last_state) = LAST_BATTERY_STATE.lock() {
         if let Some((last_level, last_charging)) = *last_state {
@@ -194,7 +194,7 @@ fn generate_tray_icon(tray_icon: &TrayIcon) -> Option<(u8, bool)> {
         }
         *last_state = Some((level, charging));
     }
-    
+
     let icon_path = if charging {
         let charging_svg = find_icon("charging.svg")
             .unwrap_or_else(|| PathBuf::from("icons/charging.svg"));
@@ -224,7 +224,7 @@ fn generate_tray_icon(tray_icon: &TrayIcon) -> Option<(u8, bool)> {
     };
     if let Some(png_path) = png_path {
         std::io::stderr().flush().ok();
-        
+
         // Load the PNG file as a TrayIconImage
         if let Ok(icon_data) = std::fs::read(&png_path) {
             // Load PNG and convert to RGBA for tray-icon
@@ -352,17 +352,17 @@ fn svg_to_png_temp(svg_path: &PathBuf) -> Option<String> {
     }
 
     eprintln!("[rivalcfg-tray] Successfully created PNG: {}", temp_path.display());
-    
+
     // Keep the temp file around by leaking it
     std::mem::forget(temp_file);
-    
+
     let png_path_str = temp_path.to_str()?.to_string();
-    
+
     // Update cache
     if let Ok(mut cache) = PNG_CACHE.lock() {
         cache.insert(cache_key, (png_path_str.clone(), svg_modified));
     }
-    
+
     Some(png_path_str)
 }
 
@@ -467,7 +467,7 @@ fn find_icon(name: &str) -> Option<PathBuf> {
         // System-wide installation (legacy path)
         PathBuf::from(format!("/usr/share/rivalcfgtray/icons/{}", name)),
     ];
-    
+
     // Also try relative to the executable
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
@@ -479,7 +479,7 @@ fn find_icon(name: &str) -> Option<PathBuf> {
             }
         }
     }
-    
+
     // Try relative to the current working directory with more parent directories
     let mut current = std::env::current_dir().ok();
     while let Some(dir) = current {
@@ -559,6 +559,35 @@ fn composite_battery_charging_svg(
     Some(tmp_path)
 }
 
+fn schedule_adaptive_battery_update(tray_icon: &TrayIcon) {
+    let tray_icon_clone = tray_icon.clone();
+    
+    // Initial schedule with default interval
+    schedule_next_battery_check(&tray_icon_clone);
+}
+
+fn schedule_next_battery_check(tray_icon: &TrayIcon) {
+    let tray_icon_clone = tray_icon.clone();
+    
+    glib::timeout_add_local_once(Duration::from_millis(100), move || {
+        let (level, _charging) = generate_tray_icon(&tray_icon_clone).unwrap_or((0, false));
+        let _ = tray_icon_clone.set_tooltip(Some(&format!("Battery: {}%", level)));
+        
+        // Determine next poll interval based on battery level
+        let next_interval = if level < 15 || level > 90 {
+            30  // 30 seconds for low/high battery
+        } else {
+            300  // 5 minutes for normal range
+        };
+        
+        let tray_icon_for_next = tray_icon_clone.clone();
+        glib::timeout_add_local(Duration::from_secs(next_interval), move || {
+            schedule_next_battery_check(&tray_icon_for_next);
+            ControlFlow::Break
+        });
+    });
+}
+
 fn main() -> anyhow::Result<()> {
     gtk::init()?;
 
@@ -569,14 +598,14 @@ fn main() -> anyhow::Result<()> {
         "[rivalcfg-tray] Starting tray for device: {} with battery level: {}%, charging: {}",
         mouse_name, level, charging
     );
-    
+
     // Create menu using tray-icon's menu system
     let menu = Menu::new();
-    
+
     // Battery percentage item (non-clickable)
     let percent_text = MenuItem::new(&format!("Battery: {}%", level), false, None);
     menu.append(&percent_text)?;
-    
+
     // Status item (non-clickable)
     let status_text = MenuItem::new(
         &format!("Status: {}", if charging { "Charging" } else { "Discharging" }),
@@ -584,14 +613,14 @@ fn main() -> anyhow::Result<()> {
         None
     );
     menu.append(&status_text)?;
-    
+
     // Config button
     let config_button = MenuItem::new("Config", true, None);
     menu.append(&config_button)?;
-    
+
     // Separator
     menu.append(&PredefinedMenuItem::separator())?;
-    
+
     // Icon Colour Switch submenu
     let colour_switch_submenu = Submenu::new("Icon Colour Switch", true);
     let dark_mode_item = MenuItem::new("Dark Mode (default)", true, None);
@@ -601,14 +630,14 @@ fn main() -> anyhow::Result<()> {
     colour_switch_submenu.append(&light_mode_item)?;
     colour_switch_submenu.append(&custom_colour_item)?;
     menu.append(&colour_switch_submenu)?;
-    
+
     // Separator
     menu.append(&PredefinedMenuItem::separator())?;
-    
+
     // Quit button
     let quit_button = MenuItem::new("Quit", true, None);
     menu.append(&quit_button)?;
-    
+
     // Build the tray icon
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
@@ -638,14 +667,14 @@ fn main() -> anyhow::Result<()> {
     let tray_icon_for_light = tray_icon.clone();
     let tray_icon_for_custom = tray_icon.clone();
     let tray_icon_for_timer = tray_icon.clone();
-    
+
     // Get menu item IDs for event handling
     let quit_button_id = quit_button.id().clone();
     let config_button_id = config_button.id().clone();
     let dark_mode_id = dark_mode_item.id().clone();
     let light_mode_id = light_mode_item.id().clone();
     let custom_colour_id = custom_colour_item.id().clone();
-    
+
     // Handle menu events using glib's idle_add
     let menu_channel = MenuEvent::receiver();
     glib::idle_add_local(move || {
@@ -667,12 +696,10 @@ fn main() -> anyhow::Result<()> {
         ControlFlow::Continue
     });
 
-    // Update icon every 30 seconds
-    glib::timeout_add_local(Duration::from_secs(30), move || {
-        let (level, _charging) = generate_tray_icon(&tray_icon_for_timer).unwrap_or((0, false));
-        let _ = tray_icon_for_timer.set_tooltip(Some(&format!("Battery: {}%", level)));
-        ControlFlow::Continue
-    });
+    // Adaptive polling: check battery more frequently at low/high levels, less frequently in normal range
+    // - Normal (15%-90%): poll every 5 minutes
+    // - Low (<15%) or High (>90%): poll every 30 seconds
+    schedule_adaptive_battery_update(&tray_icon_for_timer);
 
     // Cleanup temp files every 10 minutes
     glib::timeout_add_local(Duration::from_secs(600), move || {
@@ -681,7 +708,7 @@ fn main() -> anyhow::Result<()> {
     });
 
     gtk::main();
-    
+
     // Cleanup temp files on exit
     cleanup_temp_files();
     Ok(())
