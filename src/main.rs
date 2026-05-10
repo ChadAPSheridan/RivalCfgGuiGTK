@@ -561,25 +561,26 @@ fn composite_battery_charging_svg(
 
 fn schedule_adaptive_battery_update(tray_icon: &TrayIcon) {
     let tray_icon_clone = tray_icon.clone();
-    
+
     // Initial schedule with default interval
     schedule_next_battery_check(&tray_icon_clone);
 }
 
 fn schedule_next_battery_check(tray_icon: &TrayIcon) {
     let tray_icon_clone = tray_icon.clone();
-    
+
     glib::timeout_add_local_once(Duration::from_millis(100), move || {
         let (level, _charging) = generate_tray_icon(&tray_icon_clone).unwrap_or((0, false));
         let _ = tray_icon_clone.set_tooltip(Some(&format!("Battery: {}%", level)));
-        
+
         // Determine next poll interval based on battery level
-        let next_interval = if level < 15 || level > 90 {
+        let next_interval = if (level < 15 && !_charging) || (level > 90 && _charging) {
+
             30  // 30 seconds for low/high battery
         } else {
             300  // 5 minutes for normal range
         };
-        
+
         let tray_icon_for_next = tray_icon_clone.clone();
         glib::timeout_add_local(Duration::from_secs(next_interval), move || {
             schedule_next_battery_check(&tray_icon_for_next);
@@ -675,10 +676,10 @@ fn main() -> anyhow::Result<()> {
     let light_mode_id = light_mode_item.id().clone();
     let custom_colour_id = custom_colour_item.id().clone();
 
-    // Handle menu events using glib's idle_add
+    // Handle menu events with a blocking loop in glib's main context
     let menu_channel = MenuEvent::receiver();
-    glib::idle_add_local(move || {
-        if let Ok(event) = menu_channel.try_recv() {
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        while let Ok(event) = menu_channel.try_recv() {
             if event.id == quit_button_id {
                 cleanup_temp_files();
                 gtk::main_quit();
